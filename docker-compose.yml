@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - GORM_DSN=${GORM_DSN}
+      - PORT=8080
+      - FRONTEND_URL=${FRONTEND_URL}
+    restart: unless-stopped 
