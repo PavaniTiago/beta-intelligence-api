@@ -4,9 +4,9 @@ import (
 	"log"
 	"os"
 
-	"github.com/PavaniTiago/beta-intelligence/internal/infrastructure/database"
-	"github.com/PavaniTiago/beta-intelligence/internal/interfaces/http/middleware"
-	"github.com/PavaniTiago/beta-intelligence/internal/interfaces/http/routes"
+	"github.com/PavaniTiago/beta-intelligence-api/internal/infrastructure/database"
+	"github.com/PavaniTiago/beta-intelligence-api/internal/interfaces/http/middleware"
+	"github.com/PavaniTiago/beta-intelligence-api/internal/interfaces/http/routes"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -30,9 +30,10 @@ func main() {
 
 	// Configure CORS
 	app.Use(cors.New(cors.Config{
-		AllowOrigins: "*",
-		AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
-		AllowHeaders: "Origin, Content-Type, Accept",
+		AllowOrigins:     "https://beta-intelligence.vercel.app",
+		AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS",
+		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
+		AllowCredentials: true,
 	}))
 
 	// Setup middleware
