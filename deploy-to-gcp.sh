@@ -5,9 +5,9 @@
 # Configurações - Edite estas variáveis
 PROJECT_ID=""  # Seu ID do projeto GCP
 REGION="us-central1"
-REPOSITORY_NAME="beta-intelligence-repo"
+REPOSITORY_NAME="beta-intelligence-api-repo"
 IMAGE_NAME="beta-intelligence-api"
-VM_NAME="beta-intelligence-vm"
+VM_NAME="beta-intelligence-api-vm"
 MACHINE_TYPE="e2-small"
 ZONE="us-central1-a"
 

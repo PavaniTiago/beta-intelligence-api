@@ -1,7 +1,7 @@
 package repositories
 
 import (
-	"github.com/PavaniTiago/beta-intelligence/internal/domain/entities"
+	"github.com/PavaniTiago/beta-intelligence-api/internal/domain/entities"
 	"gorm.io/gorm"
 )
 

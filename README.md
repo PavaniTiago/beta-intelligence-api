@@ -14,8 +14,8 @@ API em Go para o projeto Beta Intelligence.
 
 1. Clone o repositório:
    ```bash
-   git clone https://github.com/PavaniTiago/beta-intelligence.git
-   cd beta-intelligence
+   git clone https://github.com/PavaniTiago/beta-intelligence-api.git
+   cd beta-intelligence-api
    ```
 
 2. Certifique-se de que o arquivo `.env` está configurado corretamente:

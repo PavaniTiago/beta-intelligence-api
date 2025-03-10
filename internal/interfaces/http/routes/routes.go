@@ -1,10 +1,10 @@
 package routes
 
 import (
-	"github.com/PavaniTiago/beta-intelligence/internal/application/usecases"
-	"github.com/PavaniTiago/beta-intelligence/internal/domain/repositories"
-	"github.com/PavaniTiago/beta-intelligence/internal/interfaces/http/handlers"
-	"github.com/PavaniTiago/beta-intelligence/internal/interfaces/http/middleware"
+	"github.com/PavaniTiago/beta-intelligence-api/internal/application/usecases"
+	"github.com/PavaniTiago/beta-intelligence-api/internal/domain/repositories"
+	"github.com/PavaniTiago/beta-intelligence-api/internal/interfaces/http/handlers"
+	"github.com/PavaniTiago/beta-intelligence-api/internal/interfaces/http/middleware"
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"

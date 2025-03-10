@@ -1,4 +1,4 @@
-module github.com/PavaniTiago/beta-intelligence
+module github.com/PavaniTiago/beta-intelligence-api
 
 go 1.23.4
 

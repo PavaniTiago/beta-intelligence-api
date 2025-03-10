@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/PavaniTiago/beta-intelligence/internal/application/usecases"
-	"github.com/PavaniTiago/beta-intelligence/internal/domain/entities"
-	"github.com/PavaniTiago/beta-intelligence/internal/domain/repositories"
+	"github.com/PavaniTiago/beta-intelligence-api/internal/application/usecases"
+	"github.com/PavaniTiago/beta-intelligence-api/internal/domain/entities"
+	"github.com/PavaniTiago/beta-intelligence-api/internal/domain/repositories"
 
 	"github.com/gofiber/fiber/v2"
 )

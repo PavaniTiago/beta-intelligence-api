@@ -1,8 +1,8 @@
 package usecases
 
 import (
-	"github.com/PavaniTiago/beta-intelligence/internal/domain/entities"
-	"github.com/PavaniTiago/beta-intelligence/internal/domain/repositories"
+	"github.com/PavaniTiago/beta-intelligence-api/internal/domain/entities"
+	"github.com/PavaniTiago/beta-intelligence-api/internal/domain/repositories"
 )
 
 type FunnelUseCase interface {

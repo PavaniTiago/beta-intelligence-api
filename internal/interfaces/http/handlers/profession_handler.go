@@ -3,7 +3,7 @@ package handlers
 import (
 	"strconv"
 
-	"github.com/PavaniTiago/beta-intelligence/internal/application/usecases"
+	"github.com/PavaniTiago/beta-intelligence-api/internal/application/usecases"
 	"github.com/gofiber/fiber/v2"
 )
 
