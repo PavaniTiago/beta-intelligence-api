@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/PavaniTiago/beta-intelligence-api/internal/application/usecases"
+	"github.com/PavaniTiago/beta-intelligence-api/internal/domain/repositories"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -230,11 +232,39 @@ func (h *EventHandler) GetEvents(c *fiber.Ctx) error {
 		toTime = time.Now()
 	}
 
+	// Processar filtros avançados
+	var advancedFilters []repositories.AdvancedFilter
+
+	// Obter condição de filtro (AND/OR)
+	filterCondition := c.Query("filter_condition", "AND")
+	if filterCondition != "AND" && filterCondition != "OR" {
+		filterCondition = "AND" // valor padrão
+	}
+
+	// Obter e processar os filtros avançados
+	advancedFiltersStr := c.Query("advanced_filters", "")
+	if advancedFiltersStr != "" {
+		// Decodificar o JSON
+		err := json.Unmarshal([]byte(advancedFiltersStr), &advancedFilters)
+		if err != nil {
+			fmt.Printf("Error parsing advanced filters: %v\n", err)
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Invalid advanced_filters format. Expected JSON array.",
+			})
+		}
+	}
+
 	// Após processar os parâmetros de data
 	fmt.Printf("From time: %v (UTC: %v)\n", fromTime, fromTime.UTC())
 	fmt.Printf("To time: %v (UTC: %v)\n", toTime, toTime.UTC())
+	fmt.Printf("Advanced filters: %+v\n", advancedFilters)
+	fmt.Printf("Filter condition: %s\n", filterCondition)
 
-	events, total, err := h.eventUseCase.GetEvents(page, limit, orderBy, fromTime, toTime, professionIDs, funnelIDs)
+	// Como removemos a implementação de filtros por horário, vamos passar valores vazios para esses parâmetros
+	timeFrom := ""
+	timeTo := ""
+
+	events, total, err := h.eventUseCase.GetEvents(page, limit, orderBy, fromTime, toTime, timeFrom, timeTo, professionIDs, funnelIDs, advancedFilters, filterCondition)
 	if err != nil {
 		fmt.Printf("Error fetching events: %v\n", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -243,7 +273,7 @@ func (h *EventHandler) GetEvents(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"data": events,
+		"events": events,
 		"meta": fiber.Map{
 			"total":             total,
 			"page":              page,
@@ -255,6 +285,8 @@ func (h *EventHandler) GetEvents(c *fiber.Ctx) error {
 			"sort_direction":    sortDirection,
 			"profession_ids":    professionIDs,
 			"funnel_ids":        funnelIDs,
+			"filter_condition":  filterCondition,
+			"advanced_filters":  advancedFilters,
 			"valid_sort_fields": getKeys(validSortFields),
 		},
 	})
