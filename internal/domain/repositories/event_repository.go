@@ -34,195 +34,210 @@ func (r *eventRepository) GetEvents(page, limit int, orderBy string, from, to ti
 	var events []entities.Event
 	var total int64
 
-	// Base query com filtro de data
-	baseQuery := r.db.Model(&entities.Event{}).
-		Where("events.event_time AT TIME ZONE 'UTC' >= ? AND events.event_time AT TIME ZONE 'UTC' <= ?", from.UTC(), to.UTC())
+	// Inicializar a consulta base
+	baseQuery := r.db.Model(&entities.Event{})
 
-	// Verificar se precisamos adicionar JOINs para os filtros avançados
-	needsUserJoin := false
-	needsSessionJoin := false
-	needsProfessionJoin := false
-	needsProductJoin := false
-	needsFunnelJoin := false
+	// Adicionar JOINs preemptivamente para todas as tabelas relacionadas
+	// Isso simplifica a lógica e evita problemas quando os filtros combinam dados de diferentes tabelas
+	baseQuery = baseQuery.
+		Joins("LEFT JOIN users ON events.user_id = users.user_id").
+		Joins("LEFT JOIN sessions ON events.session_id = sessions.session_id").
+		Joins("LEFT JOIN professions ON events.profession_id = professions.profession_id").
+		Joins("LEFT JOIN products ON events.product_id = products.product_id").
+		Joins("LEFT JOIN funnels ON events.funnel_id = funnels.funnel_id")
 
-	// Analisar os filtros avançados para identificar as tabelas necessárias
-	for _, filter := range advancedFilters {
-		if strings.HasPrefix(filter.Property, "user.") {
-			needsUserJoin = true
-		} else if strings.HasPrefix(filter.Property, "session.") {
-			needsSessionJoin = true
-		} else if strings.HasPrefix(filter.Property, "profession.") {
-			needsProfessionJoin = true
-		} else if strings.HasPrefix(filter.Property, "product.") {
-			needsProductJoin = true
-		} else if strings.HasPrefix(filter.Property, "funnel.") {
-			needsFunnelJoin = true
-		}
-	}
+	// Aplicar filtro de data com timezone explícito
+	// Converter para UTC para garantir consistência nas consultas
+	baseQuery = baseQuery.Where("events.event_time >= ? AND events.event_time <= ?", from, to)
 
-	// Adicionar os JOINs necessários
-	if needsUserJoin {
-		baseQuery = baseQuery.Joins("LEFT JOIN users ON events.user_id = users.user_id")
-	}
-	if needsSessionJoin {
-		baseQuery = baseQuery.Joins("LEFT JOIN sessions ON events.session_id = sessions.session_id")
-	}
-	if needsProfessionJoin {
-		baseQuery = baseQuery.Joins("LEFT JOIN professions ON events.profession_id = professions.profession_id")
-	}
-	if needsProductJoin {
-		baseQuery = baseQuery.Joins("LEFT JOIN products ON events.product_id = products.product_id")
-	}
-	if needsFunnelJoin {
-		baseQuery = baseQuery.Joins("LEFT JOIN funnels ON events.funnel_id = funnels.funnel_id")
-	}
+	fmt.Printf("Aplicando filtro de data: from=%v, to=%v\n", from, to)
 
-	// Gerar SQL para debug
-	var sqlStr string
+	// Gerar SQL para debug após aplicar os JOINs
 	testQuery := baseQuery.Session(&gorm.Session{DryRun: true})
-	sqlStr = testQuery.Find(&events).Statement.SQL.String()
-	fmt.Printf("Generated SQL with date/time filter: %s\n", sqlStr)
+	sqlStr := testQuery.Find(&events).Statement.SQL.String()
+	fmt.Printf("Generated SQL após JOINs e filtro de data: %s\n", sqlStr)
 
 	// Adicionar filtro de profissão se fornecido
 	if len(professionIDs) > 0 {
-		fmt.Printf("Applying profession filter with IDs: %v\n", professionIDs)
-
-		// Verificar se os IDs existem na tabela professions
-		var existingProfessionIDs []int
-		if err := r.db.Model(&entities.Profession{}).
-			Where("profession_id IN ?", professionIDs).
-			Pluck("profession_id", &existingProfessionIDs).Error; err != nil {
-			fmt.Printf("Error checking profession IDs: %v\n", err)
-		}
-
-		fmt.Printf("Existing profession IDs in database: %v\n", existingProfessionIDs)
-
-		// Construir a condição IN manualmente
-		var placeholders []string
-		var values []interface{}
-		for _, id := range professionIDs {
-			placeholders = append(placeholders, "?")
-			values = append(values, id)
-		}
-		inClause := fmt.Sprintf("events.profession_id IN (%s)", strings.Join(placeholders, ","))
-		baseQuery = baseQuery.Where(inClause, values...)
-
-		// Gerar SQL para debug
-		var sqlStr string
-		testQuery := baseQuery.Session(&gorm.Session{DryRun: true})
-		sqlStr = testQuery.Find(&events).Statement.SQL.String()
-		fmt.Printf("Generated SQL with profession filter: %s\n", sqlStr)
+		baseQuery = baseQuery.Where("events.profession_id IN ?", professionIDs)
+		fmt.Printf("Aplicando filtro de profissão com IDs: %v\n", professionIDs)
 	}
 
 	// Adicionar filtro de funil se fornecido
 	if len(funnelIDs) > 0 {
 		baseQuery = baseQuery.Where("events.funnel_id IN ?", funnelIDs)
+		fmt.Printf("Aplicando filtro de funil com IDs: %v\n", funnelIDs)
 	}
 
 	// Aplicar filtros avançados
 	if len(advancedFilters) > 0 {
-		// Validar condição de filtro (AND/OR)
+		fmt.Printf("Aplicando %d filtros avançados com condição: %s\n", len(advancedFilters), filterCondition)
+
+		// Definir operador lógico entre filtros (AND/OR)
 		condition := "AND"
 		if filterCondition == "OR" {
 			condition = "OR"
 		}
 
-		for i, filter := range advancedFilters {
-			// Mapear os operadores do frontend para operadores SQL
-			var sqlOperator string
-			var sqlValue interface{}
+		// Para filtros OR, precisamos construir uma cláusula completa para não interferir nos outros filtros
+		if condition == "OR" {
+			orConditions := []string{}
+			orValues := []interface{}{}
 
-			switch filter.Operator {
-			case "equals":
-				sqlOperator = "="
-				sqlValue = filter.Value
-			case "not_equals":
-				sqlOperator = "!="
-				sqlValue = filter.Value
-			case "contains":
-				sqlOperator = "LIKE"
-				sqlValue = "%" + filter.Value + "%"
-			case "not_contains":
-				sqlOperator = "NOT LIKE"
-				sqlValue = "%" + filter.Value + "%"
-			default:
-				// Operador não suportado, pular este filtro
-				continue
-			}
+			for _, filter := range advancedFilters {
+				// Mapear os operadores do frontend para operadores SQL
+				var sqlOperator string
+				var sqlValue interface{}
 
-			// Tratar propriedades aninhadas como user.fullname
-			property := filter.Property
-			var tableName, columnName string
+				switch filter.Operator {
+				case "equals":
+					sqlOperator = "="
+					sqlValue = filter.Value
+				case "not_equals":
+					sqlOperator = "!="
+					sqlValue = filter.Value
+				case "contains":
+					sqlOperator = "LIKE"
+					sqlValue = "%" + filter.Value + "%"
+				case "not_contains":
+					sqlOperator = "NOT LIKE"
+					sqlValue = "%" + filter.Value + "%"
+				default:
+					// Operador não suportado, pular este filtro
+					continue
+				}
 
-			if strings.Contains(property, ".") {
-				parts := strings.Split(property, ".")
-				if len(parts) == 2 {
-					tableName = parts[0]
-					columnName = parts[1]
+				// Tratar propriedades aninhadas como user.fullname
+				property := filter.Property
 
-					// Mapear o nome da tabela corretamente
-					switch tableName {
-					case "user":
-						property = "users." + columnName
-					case "session":
-						property = "sessions." + columnName
-					case "profession":
-						property = "professions." + columnName
-					case "product":
-						property = "products." + columnName
-					case "funnel":
-						property = "funnels." + columnName
-					default:
-						property = "events." + property
+				if strings.Contains(property, ".") {
+					parts := strings.Split(property, ".")
+					if len(parts) == 2 {
+						tableName := parts[0]
+						columnName := parts[1]
+
+						// Mapear o nome da tabela corretamente
+						switch tableName {
+						case "user":
+							property = "users." + columnName
+						case "session":
+							property = "sessions." + columnName
+						case "profession":
+							property = "professions." + columnName
+						case "product":
+							property = "products." + columnName
+						case "funnel":
+							property = "funnels." + columnName
+						default:
+							property = "events." + property
+						}
 					}
+				} else {
+					// Se não for propriedade aninhada, assumir que é do evento
+					property = "events." + property
 				}
-			} else {
-				// Se não for propriedade aninhada, assumir que é do evento
-				property = "events." + property
+
+				// Adicionar à lista de condições OR
+				orConditions = append(orConditions, fmt.Sprintf("%s %s ?", property, sqlOperator))
+				orValues = append(orValues, sqlValue)
 			}
 
-			// Construir a condição WHERE
-			whereClause := fmt.Sprintf("%s %s ?", property, sqlOperator)
+			// Se temos condições OR, adicioná-las à consulta dentro de parênteses
+			if len(orConditions) > 0 {
+				orClause := "(" + strings.Join(orConditions, " OR ") + ")"
+				query := orClause
+				baseQuery = baseQuery.Where(query, orValues...)
+			}
+		} else {
+			// Caso AND - podemos aplicar os filtros sequencialmente
+			for _, filter := range advancedFilters {
+				// Mapear os operadores do frontend para operadores SQL
+				var sqlOperator string
+				var sqlValue interface{}
 
-			// Adicionar a condição ao query
-			if i == 0 {
-				// Para o primeiro filtro, não usamos AND/OR ainda
-				baseQuery = baseQuery.Where(whereClause, sqlValue)
-			} else {
-				// Para filtros subsequentes, usar AND ou OR conforme especificado
-				if condition == "AND" {
-					baseQuery = baseQuery.Where(whereClause, sqlValue)
-				} else {
-					baseQuery = baseQuery.Or(whereClause, sqlValue)
+				switch filter.Operator {
+				case "equals":
+					sqlOperator = "="
+					sqlValue = filter.Value
+				case "not_equals":
+					sqlOperator = "!="
+					sqlValue = filter.Value
+				case "contains":
+					sqlOperator = "LIKE"
+					sqlValue = "%" + filter.Value + "%"
+				case "not_contains":
+					sqlOperator = "NOT LIKE"
+					sqlValue = "%" + filter.Value + "%"
+				default:
+					// Operador não suportado, pular este filtro
+					continue
 				}
+
+				// Tratar propriedades aninhadas como user.fullname
+				property := filter.Property
+
+				if strings.Contains(property, ".") {
+					parts := strings.Split(property, ".")
+					if len(parts) == 2 {
+						tableName := parts[0]
+						columnName := parts[1]
+
+						// Mapear o nome da tabela corretamente
+						switch tableName {
+						case "user":
+							property = "users." + columnName
+						case "session":
+							property = "sessions." + columnName
+						case "profession":
+							property = "professions." + columnName
+						case "product":
+							property = "products." + columnName
+						case "funnel":
+							property = "funnels." + columnName
+						default:
+							property = "events." + property
+						}
+					}
+				} else {
+					// Se não for propriedade aninhada, assumir que é do evento
+					property = "events." + property
+				}
+
+				// Adicionar o filtro à consulta
+				whereClause := fmt.Sprintf("%s %s ?", property, sqlOperator)
+				baseQuery = baseQuery.Where(whereClause, sqlValue)
+
+				fmt.Printf("Adicionado filtro: %s %s %v\n", property, sqlOperator, sqlValue)
 			}
 		}
 	}
 
-	// Get total count AFTER applying all filters
+	// Gerar SQL final para debug
+	testFinalQuery := baseQuery.Session(&gorm.Session{DryRun: true})
+	finalSqlStr := testFinalQuery.Find(&events).Statement.SQL.String()
+	fmt.Printf("SQL Final após todos os filtros: %s\n", finalSqlStr)
+
+	// Obter contagem total após aplicar todos os filtros
 	if err := baseQuery.Count(&total).Error; err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("erro ao contar eventos: %w", err)
 	}
 
-	// Calculate offset for pagination
+	// Calcular offset para paginação
 	offset := (page - 1) * limit
 
-	// Removendo a seleção explícita de colunas que estão causando o erro
+	// Executar a consulta com paginação e ordenação
 	query := baseQuery.
 		Order(orderBy).
 		Offset(offset).
 		Limit(limit)
 
-	// Execute query to get events
+	// Executar a consulta para obter eventos
 	if err := query.Find(&events).Error; err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("erro ao buscar eventos: %w", err)
 	}
 
 	// Verificar os eventos retornados
-	fmt.Printf("Number of events returned: %d\n", len(events))
-	if len(events) > 0 {
-		fmt.Printf("First event profession_id: %d\n", events[0].ProfessionID)
-	}
+	fmt.Printf("Número de eventos retornados: %d (total no banco: %d)\n", len(events), total)
 
 	// Collect all the IDs we need to fetch related data
 	var sessionIDs []uuid.UUID
@@ -331,16 +346,6 @@ func (r *eventRepository) GetEvents(page, limit int, orderBy string, from, to ti
 		if funnel, ok := funnelMap[events[i].FunnelID]; ok {
 			events[i].Funnel = funnel
 		}
-	}
-
-	// Verificar se há eventos no período
-	var countInPeriod int64
-	if err := r.db.Model(&entities.Event{}).
-		Where("event_time >= ? AND event_time <= ?", from, to).
-		Count(&countInPeriod).Error; err != nil {
-		fmt.Printf("Error counting events in period: %v\n", err)
-	} else {
-		fmt.Printf("Number of events in period (%v to %v): %d\n", from, to, countInPeriod)
 	}
 
 	return events, total, nil

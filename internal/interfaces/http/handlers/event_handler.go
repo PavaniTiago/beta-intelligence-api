@@ -206,11 +206,12 @@ func (h *EventHandler) GetEvents(c *fiber.Ctx) error {
 				})
 			}
 			// Se for apenas data, define para o início do dia
-			fromTime = time.Date(fromTime.Year(), fromTime.Month(), fromTime.Day(), 0, 0, 0, 0, fromTime.Location())
+			fromTime = time.Date(fromTime.Year(), fromTime.Month(), fromTime.Day(), 0, 0, 0, 0, time.UTC)
 		}
 	} else {
-		// If no from date, use 30 days ago as default
-		fromTime = time.Now().AddDate(0, 0, -30)
+		// If no from date, use 30 days ago as default - definir para UTC
+		now := time.Now().UTC()
+		fromTime = now.AddDate(0, 0, -30)
 	}
 
 	if to != "" {
@@ -225,12 +226,21 @@ func (h *EventHandler) GetEvents(c *fiber.Ctx) error {
 				})
 			}
 			// Se for apenas data, define para o final do dia
-			toTime = time.Date(toTime.Year(), toTime.Month(), toTime.Day(), 23, 59, 59, 999999999, toTime.Location())
+			toTime = time.Date(toTime.Year(), toTime.Month(), toTime.Day(), 23, 59, 59, 999999999, time.UTC)
 		}
 	} else {
-		// If no to date, use current time
-		toTime = time.Now()
+		// If no to date, use current time in UTC
+		toTime = time.Now().UTC()
 	}
+
+	// Garantir que "from" seja sempre anterior a "to"
+	if fromTime.After(toTime) {
+		fromTime, toTime = toTime, fromTime
+	}
+
+	// Certificar-se de trabalhar com UTC para evitar inconsistências de timezone
+	fromTime = fromTime.UTC()
+	toTime = toTime.UTC()
 
 	// Processar filtros avançados
 	var advancedFilters []repositories.AdvancedFilter
