@@ -36,10 +36,10 @@ func main() {
 		Prefork: false,
 		// Set reasonable body limit
 		BodyLimit: 10 * 1024 * 1024, // 10MB
-		// Configure server for better performance
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		// Configure server for better performance - aumentados timeouts para resolver 504 Gateway Timeout
+		ReadTimeout:  60 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  240 * time.Second,
 	})
 
 	// Setup middleware
