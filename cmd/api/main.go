@@ -3,7 +3,6 @@ package main
 import (
 	"log"
 	"os"
-	"runtime"
 	"time"
 
 	"github.com/PavaniTiago/beta-intelligence-api/internal/infrastructure/database"
@@ -33,8 +32,8 @@ func main() {
 	app := fiber.New(fiber.Config{
 		// Increase concurrency for better performance
 		Concurrency: 256 * 1024,
-		// Optimize for high performance by using all cores
-		Prefork: runtime.NumCPU() > 1,
+		// Desabilitado modo Prefork pois causa instabilidade no container
+		Prefork: false,
 		// Set reasonable body limit
 		BodyLimit: 10 * 1024 * 1024, // 10MB
 		// Configure server for better performance
