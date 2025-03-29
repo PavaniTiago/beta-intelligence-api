@@ -27,6 +27,7 @@ type RouteGroups struct {
 	Lead      fiber.Router
 	Client    fiber.Router
 	Anonymous fiber.Router
+	Session   fiber.Router
 }
 
 // SetupRouteGroups configura os grupos de rotas com seus respectivos middlewares
@@ -45,10 +46,14 @@ func SetupRouteGroups(app *fiber.App, authMiddleware func(c *fiber.Ctx) error) R
 	// Grupo para usuários anônimos
 	anonymous := app.Group("/anonymous")
 
+	// Grupo para sessões
+	session := app.Group("/session")
+
 	return RouteGroups{
 		Public:    public,
 		Lead:      lead,
 		Client:    client,
 		Anonymous: anonymous,
+		Session:   session,
 	}
 }

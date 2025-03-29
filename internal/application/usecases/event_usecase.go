@@ -1,6 +1,7 @@
 package usecases
 
 import (
+	"context"
 	"time"
 
 	"github.com/PavaniTiago/beta-intelligence-api/internal/domain/entities"
@@ -8,7 +9,7 @@ import (
 )
 
 type EventUseCase interface {
-	GetEvents(page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string, professionIDs, funnelIDs []int, advancedFilters []repositories.AdvancedFilter, filterCondition string) ([]entities.Event, int64, error)
+	GetEvents(ctx context.Context, page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string, professionIDs, funnelIDs []int, advancedFilters []repositories.AdvancedFilter, filterCondition string) ([]entities.Event, int64, error)
 }
 
 type eventUseCase struct {
@@ -19,7 +20,7 @@ func NewEventUseCase(eventRepo repositories.EventRepository) EventUseCase {
 	return &eventUseCase{eventRepo}
 }
 
-func (uc *eventUseCase) GetEvents(page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string, professionIDs, funnelIDs []int, advancedFilters []repositories.AdvancedFilter, filterCondition string) ([]entities.Event, int64, error) {
+func (uc *eventUseCase) GetEvents(ctx context.Context, page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string, professionIDs, funnelIDs []int, advancedFilters []repositories.AdvancedFilter, filterCondition string) ([]entities.Event, int64, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -30,5 +31,5 @@ func (uc *eventUseCase) GetEvents(page, limit int, orderBy string, from, to time
 		orderBy = "event_time desc"
 	}
 
-	return uc.eventRepo.GetEvents(page, limit, orderBy, from, to, timeFrom, timeTo, professionIDs, funnelIDs, advancedFilters, filterCondition)
+	return uc.eventRepo.GetEvents(ctx, page, limit, orderBy, from, to, timeFrom, timeTo, professionIDs, funnelIDs, advancedFilters, filterCondition)
 }

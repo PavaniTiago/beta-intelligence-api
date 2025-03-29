@@ -7,6 +7,8 @@ import (
 	"github.com/PavaniTiago/beta-intelligence-api/internal/interfaces/http/middleware"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/compress"
+	"github.com/gofiber/fiber/v2/middleware/etag"
 	"gorm.io/gorm"
 )
 
@@ -16,6 +18,14 @@ func authMiddleware(c *fiber.Ctx) error {
 }
 
 func SetupRoutes(app *fiber.App, db *gorm.DB) {
+	// Add performance middleware
+	app.Use(compress.New(compress.Config{
+		Level: compress.LevelBestSpeed,
+	}))
+
+	// Add ETag support for efficient caching
+	app.Use(etag.New())
+
 	// Health check
 	app.Get("/health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
@@ -29,18 +39,21 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 	eventRepo := repositories.NewEventRepository(db)
 	professionRepo := repositories.NewProfessionRepository(db)
 	funnelRepo := repositories.NewFunnelRepository(db)
+	sessionRepo := repositories.NewSessionRepository(db)
 
 	// Use Cases
 	userUseCase := usecases.NewUserUseCase(userRepo)
 	eventUseCase := usecases.NewEventUseCase(eventRepo)
 	professionUseCase := usecases.NewProfessionUseCase(professionRepo)
 	funnelUseCase := usecases.NewFunnelUseCase(funnelRepo)
+	sessionUseCase := usecases.NewSessionUseCase(sessionRepo)
 
 	// Handlers
 	userHandler := handlers.NewUserHandler(userUseCase, userRepo)
 	eventHandler := handlers.NewEventHandler(eventUseCase)
 	professionHandler := handlers.NewProfessionHandler(professionUseCase)
 	funnelHandler := handlers.NewFunnelHandler(funnelUseCase)
+	sessionHandler := handlers.NewSessionHandler(sessionUseCase)
 
 	// Routes
 	groups := middleware.SetupRouteGroups(app, authMiddleware)
@@ -65,4 +78,9 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 
 	// Funnels routes
 	groups.Public.Get("/funnels", funnelHandler.GetFunnels)
+
+	// Sessions routes
+	groups.Session.Get("/", sessionHandler.GetSessions)
+	groups.Session.Get("/active", sessionHandler.GetActiveSessions)
+	groups.Session.Get("/:id", sessionHandler.GetSessionByID)
 }

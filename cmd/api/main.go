@@ -3,6 +3,8 @@ package main
 import (
 	"log"
 	"os"
+	"runtime"
+	"time"
 
 	"github.com/PavaniTiago/beta-intelligence-api/internal/infrastructure/database"
 	"github.com/PavaniTiago/beta-intelligence-api/internal/interfaces/http/middleware"
@@ -24,8 +26,22 @@ func main() {
 		log.Fatalf("❌ Error setting up database: %v", err)
 	}
 
-	// Create Fiber app
-	app := fiber.New()
+	// Executar a contagem de sessões
+	log.Println("📊 Contando sessões...")
+
+	// Configure Fiber for better performance
+	app := fiber.New(fiber.Config{
+		// Increase concurrency for better performance
+		Concurrency: 256 * 1024,
+		// Optimize for high performance by using all cores
+		Prefork: runtime.NumCPU() > 1,
+		// Set reasonable body limit
+		BodyLimit: 10 * 1024 * 1024, // 10MB
+		// Configure server for better performance
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	})
 
 	// Setup middleware
 	middleware.SetupMiddlewares(app)

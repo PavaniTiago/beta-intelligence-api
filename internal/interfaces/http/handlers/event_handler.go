@@ -274,7 +274,7 @@ func (h *EventHandler) GetEvents(c *fiber.Ctx) error {
 	timeFrom := ""
 	timeTo := ""
 
-	events, total, err := h.eventUseCase.GetEvents(page, limit, orderBy, fromTime, toTime, timeFrom, timeTo, professionIDs, funnelIDs, advancedFilters, filterCondition)
+	events, total, err := h.eventUseCase.GetEvents(c.Context(), page, limit, orderBy, fromTime, toTime, timeFrom, timeTo, professionIDs, funnelIDs, advancedFilters, filterCondition)
 	if err != nil {
 		fmt.Printf("Error fetching events: %v\n", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
