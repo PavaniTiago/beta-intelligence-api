@@ -55,6 +55,9 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 	funnelHandler := handlers.NewFunnelHandler(funnelUseCase)
 	sessionHandler := handlers.NewSessionHandler(sessionUseCase)
 
+	// Create handlers struct
+	handlersStruct := handlers.NewHandlers(nil, db)
+
 	// Routes
 	groups := middleware.SetupRouteGroups(app, authMiddleware)
 
@@ -83,4 +86,16 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 	groups.Session.Get("/", sessionHandler.GetSessions)
 	groups.Session.Get("/active", sessionHandler.GetActiveSessions)
 	groups.Session.Get("/:id", sessionHandler.GetSessionByID)
+
+	// Rotas de Performance
+	setupPerformanceRoutes(groups.Public, handlersStruct.Performance)
+}
+
+// setupPerformanceRoutes configura as rotas de teste de performance
+func setupPerformanceRoutes(router fiber.Router, performanceHandler *handlers.PerformanceHandler) {
+	if performanceHandler != nil {
+		perfGroup := router.Group("/performance")
+		perfGroup.Get("/lead", performanceHandler.TestLeadPerformance)
+		perfGroup.Get("/session", performanceHandler.TestSessionPerformance)
+	}
 }

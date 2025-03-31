@@ -15,6 +15,9 @@ func SetupMiddlewares(app *fiber.App) {
 		MaxAge:           300, // 5 minutes
 	}))
 
+	// Performance logger middleware
+	app.Use(PerformanceLogger())
+
 	// Common middleware
 	app.Use(func(c *fiber.Ctx) error {
 		return c.Next()

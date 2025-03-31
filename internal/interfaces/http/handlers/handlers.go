@@ -3,15 +3,18 @@ package handlers
 import (
 	"github.com/PavaniTiago/beta-intelligence-api/internal/application/usecases"
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
 )
 
 type Handlers struct {
-	useCases *usecases.UseCases
+	useCases    *usecases.UseCases
+	Performance *PerformanceHandler
 }
 
-func NewHandlers(useCases *usecases.UseCases) *Handlers {
+func NewHandlers(useCases *usecases.UseCases, db *gorm.DB) *Handlers {
 	return &Handlers{
-		useCases: useCases,
+		useCases:    useCases,
+		Performance: NewPerformanceHandler(db),
 	}
 }
 

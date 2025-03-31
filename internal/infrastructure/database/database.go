@@ -52,5 +52,10 @@ func SetupDatabase() (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to add indexes: %w", err)
 	}
 
+	// Add optimized performance indexes
+	if err := migrations.OptimizePerformanceIndexes(db); err != nil {
+		return nil, fmt.Errorf("failed to add optimized indexes: %w", err)
+	}
+
 	return db, nil
 }

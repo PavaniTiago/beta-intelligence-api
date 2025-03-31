@@ -2,12 +2,15 @@ package repositories
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/PavaniTiago/beta-intelligence-api/internal/domain/entities"
 	"github.com/google/uuid"
+	"github.com/patrickmn/go-cache"
 
 	"gorm.io/gorm"
 )
@@ -22,30 +25,47 @@ type ISessionRepository interface {
 }
 
 type SessionRepository struct {
-	db *gorm.DB
+	db    *gorm.DB
+	cache *cache.Cache
 }
 
 func NewSessionRepository(db *gorm.DB) *SessionRepository {
+	// Criar cache com expiração de 5 minutos e limpeza a cada 10 minutos
+	c := cache.New(5*time.Minute, 10*time.Minute)
 	return &SessionRepository{
-		db: db,
+		db:    db,
+		cache: c,
 	}
 }
 
 func (r *SessionRepository) GetSessions(ctx context.Context, page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string, userID, professionID, productID, funnelID string, isActive *bool) ([]entities.Session, int64, error) {
+	start := time.Now()
+	defer func() {
+		log.Printf("GetSessions took: %v", time.Since(start))
+	}()
+
 	var sessions []entities.Session
 	var total int64
 
 	offset := (page - 1) * limit
 
-	// Optimize query: Only preload what's necessary based on context
-	// Select only needed fields for initial query to improve performance
-	query := r.db.Model(&entities.Session{}).Select("sessions.*")
+	// Selecionar apenas campos necessários da tabela de sessões
+	selectFields := []string{
+		"sessions.session_id",
+		"sessions.user_id",
+		"sessions.\"sessionStart\"",
+		"sessions.\"isActive\"",
+		"sessions.\"lastActivity\"",
+		"sessions.\"duration\"",
+		"sessions.country",
+		"sessions.\"marketingChannel\"",
+		"sessions.profession_id",
+		"sessions.product_id",
+		"sessions.funnel_id",
+	}
 
-	// Use explicit joins instead of Preload for better query control
-	query = query.Joins("LEFT JOIN users ON sessions.user_id = users.user_id")
-	query = query.Joins("LEFT JOIN professions ON sessions.profession_id = professions.profession_id")
-	query = query.Joins("LEFT JOIN products ON sessions.product_id = products.product_id")
-	query = query.Joins("LEFT JOIN funnels ON sessions.funnel_id = funnels.funnel_id")
+	// Otimizar query: usar join apenas para contagem e depois fazer preload seletivo
+	query := r.db.WithContext(ctx).Model(&entities.Session{}).Select(selectFields)
 
 	// Adicionar filtros
 	if userID != "" {
@@ -105,11 +125,14 @@ func (r *SessionRepository) GetSessions(ctx context.Context, page, limit int, or
 		query = query.Where("sessions.\"sessionStart\" BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
 	}
 
-	// Get the total count in a separate query to improve performance
-	countQuery := query
+	// Medir tempo da contagem
+	countStart := time.Now()
+	// Usar sessão separada para evitar compartilhamento de estado
+	countQuery := query.Session(&gorm.Session{})
 	if err := countQuery.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
+	log.Printf("Sessions count query took: %v", time.Since(countStart))
 
 	// Apply ordering
 	if orderBy != "" {
@@ -122,9 +145,11 @@ func (r *SessionRepository) GetSessions(ctx context.Context, page, limit int, or
 	query = query.Offset(offset).Limit(limit)
 
 	// Execute the query without using Preload to optimize performance
+	findStart := time.Now()
 	if err := query.Find(&sessions).Error; err != nil {
 		return nil, 0, err
 	}
+	log.Printf("Sessions find query took: %v", time.Since(findStart))
 
 	// If we have no sessions, return early
 	if len(sessions) == 0 {
@@ -137,27 +162,25 @@ func (r *SessionRepository) GetSessions(ctx context.Context, page, limit int, or
 		sessionIDs = append(sessionIDs, session.ID)
 	}
 
+	// Otimizar preloads: carregar relações apenas se houver sessões
 	if len(sessionIDs) > 0 {
-		// Now preload related data in a single query for each relation
-		var sessionsWithData []entities.Session
-		r.db.Where("session_id IN ?", sessionIDs).
-			Preload("User").
-			Preload("Profession").
-			Preload("Product").
-			Preload("Funnel").
-			Find(&sessionsWithData)
+		// Agora preload seletivo de relacionamentos apenas com campos necessários
+		preloadStart := time.Now()
 
-		// Map the results back to our original sessions slice
-		sessionMap := make(map[uuid.UUID]entities.Session)
-		for _, s := range sessionsWithData {
-			sessionMap[s.ID] = s
+		// Preload com seleção específica de campos
+		if err := r.db.Preload("User", func(db *gorm.DB) *gorm.DB {
+			return db.Select("user_id, fullname, email")
+		}).Preload("Profession", func(db *gorm.DB) *gorm.DB {
+			return db.Select("profession_id, name")
+		}).Preload("Product", func(db *gorm.DB) *gorm.DB {
+			return db.Select("product_id, name")
+		}).Preload("Funnel", func(db *gorm.DB) *gorm.DB {
+			return db.Select("funnel_id, name")
+		}).Where("session_id IN ?", sessionIDs).Find(&sessions).Error; err != nil {
+			return nil, 0, err
 		}
 
-		for i := range sessions {
-			if s, ok := sessionMap[sessions[i].ID]; ok {
-				sessions[i] = s
-			}
-		}
+		log.Printf("Sessions preload took: %v", time.Since(preloadStart))
 	}
 
 	return sessions, total, nil
@@ -182,6 +205,30 @@ func (r *SessionRepository) FindSessionByID(ctx context.Context, id string) (*en
 }
 
 func (r *SessionRepository) CountSessions(from, to time.Time, timeFrom, timeTo string, userID, professionID, productID, funnelID string, isActive *bool) (int64, error) {
+	start := time.Now()
+	defer func() {
+		log.Printf("CountSessions took: %v", time.Since(start))
+	}()
+
+	// Gerar chave de cache baseada nos parâmetros
+	cacheKey := fmt.Sprintf("count_sessions:%s:%s:%s:%s:%s:%s:%s:%v",
+		from.Format("2006-01-02"),
+		to.Format("2006-01-02"),
+		timeFrom, timeTo,
+		userID, professionID, productID, funnelID)
+
+	if isActive != nil {
+		cacheKey = fmt.Sprintf("%s:active_%v", cacheKey, *isActive)
+	}
+
+	// Verificar se o resultado está em cache
+	if cachedValue, found := r.cache.Get(cacheKey); found {
+		log.Printf("Cache hit for CountSessions: %s", cacheKey)
+		return cachedValue.(int64), nil
+	}
+
+	// Se não estiver em cache, executar a consulta normal
+	log.Printf("Cache miss for CountSessions: %s", cacheKey)
 	query := r.db.Model(&entities.Session{})
 
 	// Adicionar filtros
@@ -237,15 +284,16 @@ func (r *SessionRepository) CountSessions(from, to time.Time, timeFrom, timeTo s
 			}
 		}
 
-		query = query.Where("\"sessionStart\" BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
+		query = query.Where(`"sessionStart" BETWEEN ? AND ?`, fromTime.UTC(), toTime.UTC())
 	}
 
 	var count int64
-	err := query.Count(&count).Error
-	if err != nil {
+	if err := query.Count(&count).Error; err != nil {
 		return 0, err
 	}
 
+	// Armazenar resultado em cache
+	r.cache.Set(cacheKey, count, cache.DefaultExpiration)
 	return count, nil
 }
 

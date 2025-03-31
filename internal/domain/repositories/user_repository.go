@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -97,12 +98,25 @@ func (r *UserRepository) GetUsers(ctx context.Context, page, limit int, orderBy 
 
 // FindLeads retorna todos os usuários que são leads com paginação, ordenação e filtro de período
 func (r *UserRepository) FindLeads(page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string) ([]entities.User, int64, error) {
+	start := time.Now()
+	defer func() {
+		log.Printf("FindLeads took: %v", time.Since(start))
+	}()
+
 	var leads []entities.User
 	var total int64
 	offset := (page - 1) * limit
 
+	// Selecionar apenas campos necessários para melhorar performance
+	selectFields := []string{
+		"user_id", "fullname", "email", "phone",
+		"\"isClient\"", "\"isIdentified\"", "created_at",
+		"initial_country", "initial_city", "initial_region",
+		"initial_marketing_channel", "initial_utm_source",
+	}
+
 	// Use the combined index for better performance
-	query := r.db.Where(`"isIdentified" = ? AND "isClient" = ?`, true, false)
+	query := r.db.Model(&entities.User{}).Select(selectFields).Where(`"isIdentified" = ? AND "isClient" = ?`, true, false)
 
 	// Verificar se há filtro de período
 	hasDateFilter := !from.IsZero() && !to.IsZero()
@@ -132,21 +146,28 @@ func (r *UserRepository) FindLeads(page, limit int, orderBy string, from, to tim
 		query = query.Where("created_at BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
 	}
 
-	// Separate count query for better performance
-	countQuery := query
-	if err := countQuery.Model(&entities.User{}).Count(&total).Error; err != nil {
+	// Medir tempo da consulta de contagem
+	countStart := time.Now()
+	// Separate count query for better performance - usar sessão diferente para evitar compartilhamento de estado
+	countQuery := query.Session(&gorm.Session{})
+	if err := countQuery.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
+	log.Printf("Count query took: %v", time.Since(countStart))
 
 	if orderBy == "" {
-		orderBy = "user_id asc"
+		orderBy = "created_at DESC"
 	}
 	query = query.Order(orderBy)
 
 	// Always use pagination to improve performance
 	query = query.Offset(offset).Limit(limit)
 
+	// Medir tempo da consulta principal
+	findStart := time.Now()
 	err := query.Find(&leads).Error
+	log.Printf("Find query took: %v", time.Since(findStart))
+
 	if err != nil {
 		return nil, 0, err
 	}
