@@ -2,14 +2,14 @@ package repositories
 
 import (
 	"context"
-
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/PavaniTiago/beta-intelligence-api/internal/domain/entities"
 	"github.com/google/uuid"
-
+	"github.com/patrickmn/go-cache"
 	"gorm.io/gorm"
 )
 
@@ -23,61 +23,69 @@ type ISessionRepository interface {
 }
 
 type SessionRepository struct {
-	db *gorm.DB
+	db    *gorm.DB
+	cache *cache.Cache
 }
 
 func NewSessionRepository(db *gorm.DB) *SessionRepository {
-
 	return &SessionRepository{
-		db: db,
+		db:    db,
+		cache: cache.New(5*time.Minute, 10*time.Minute),
 	}
 }
 
 func (r *SessionRepository) GetSessions(ctx context.Context, page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string, userID, professionID, productID, funnelID string, isActive *bool) ([]entities.Session, int64, error) {
+	// Gerar chave de cache baseada nos parâmetros
+	cacheKey := fmt.Sprintf("sessions:%d:%d:%s:%v:%v:%s:%s:%s:%s:%s:%s:%v",
+		page, limit, orderBy, from, to, timeFrom, timeTo, userID, professionID, productID, funnelID, isActive)
+
+	// Tentar obter do cache
+	if cached, found := r.cache.Get(cacheKey); found {
+		return cached.([]entities.Session), 0, nil
+	}
+
+	// Adicionar timeout ao contexto
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
 	var sessions []entities.Session
 	var total int64
 
 	offset := (page - 1) * limit
 
-	// Optimize query: Only preload what's necessary based on context
-	// Select only needed fields for initial query to improve performance
-	query := r.db.Model(&entities.Session{}).Select("sessions.*")
+	// Otimizar query selecionando apenas campos necessários
+	query := r.db.WithContext(ctx).Model(&entities.Session{}).Select(
+		"session_id, user_id, session_start, is_active, last_activity, country, city, state, ip_address, user_agent, duration",
+	)
 
-	// Use explicit joins instead of Preload for better query control
-	query = query.Joins("LEFT JOIN users ON sessions.user_id = users.user_id")
-	query = query.Joins("LEFT JOIN professions ON sessions.profession_id = professions.profession_id")
-	query = query.Joins("LEFT JOIN products ON sessions.product_id = products.product_id")
-	query = query.Joins("LEFT JOIN funnels ON sessions.funnel_id = funnels.funnel_id")
-
-	// Adicionar filtros
+	// Aplicar filtros
 	if userID != "" {
-		query = query.Where("sessions.user_id = ?", userID)
+		query = query.Where("user_id = ?", userID)
 	}
 
 	if professionID != "" {
 		profID, err := strconv.Atoi(professionID)
 		if err == nil {
-			query = query.Where("sessions.profession_id = ?", profID)
+			query = query.Where("profession_id = ?", profID)
 		}
 	}
 
 	if productID != "" {
 		prodID, err := strconv.Atoi(productID)
 		if err == nil {
-			query = query.Where("sessions.product_id = ?", prodID)
+			query = query.Where("product_id = ?", prodID)
 		}
 	}
 
 	if funnelID != "" {
 		funID, err := strconv.Atoi(funnelID)
 		if err == nil {
-			query = query.Where("sessions.funnel_id = ?", funID)
+			query = query.Where("funnel_id = ?", funID)
 		}
 	}
 
 	if isActive != nil {
-		query = query.Where("sessions.\"isActive\" = ?", *isActive)
+		query = query.Where("is_active = ?", *isActive)
 	}
 
 	// Verificar se há filtro de período
@@ -105,12 +113,11 @@ func (r *SessionRepository) GetSessions(ctx context.Context, page, limit int, or
 			}
 		}
 
-		query = query.Where("sessions.\"sessionStart\" BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
+		query = query.Where("session_start BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
 	}
 
-	// Get the total count in a separate query to improve performance
+	// Get total count in a separate query
 	countQuery := query
-
 	if err := countQuery.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
@@ -119,52 +126,84 @@ func (r *SessionRepository) GetSessions(ctx context.Context, page, limit int, or
 	if orderBy != "" {
 		query = query.Order(orderBy)
 	} else {
-		query = query.Order("sessions.\"sessionStart\" DESC")
+		query = query.Order("session_start DESC")
 	}
 
 	// Apply pagination
 	query = query.Offset(offset).Limit(limit)
 
-	// Execute the query without using Preload to optimize performance
-
+	// Execute query
 	if err := query.Find(&sessions).Error; err != nil {
 		return nil, 0, err
 	}
 
-	// If we have no sessions, return early
-	if len(sessions) == 0 {
-		return sessions, total, nil
-	}
-
-	// Collect all the session IDs
-	var sessionIDs []uuid.UUID
-	for _, session := range sessions {
-		sessionIDs = append(sessionIDs, session.ID)
-	}
-
-	if len(sessionIDs) > 0 {
-		// Now preload related data in a single query for each relation
-		var sessionsWithData []entities.Session
-		r.db.Where("session_id IN ?", sessionIDs).
-			Preload("User").
-			Preload("Profession").
-			Preload("Product").
-			Preload("Funnel").
-			Find(&sessionsWithData)
-
-		// Map the results back to our original sessions slice
-		sessionMap := make(map[uuid.UUID]entities.Session)
-		for _, s := range sessionsWithData {
-			sessionMap[s.ID] = s
-
+	// Se tivermos sessões, carregar dados relacionados de forma otimizada
+	if len(sessions) > 0 {
+		var sessionIDs []uuid.UUID
+		for _, session := range sessions {
+			sessionIDs = append(sessionIDs, session.ID)
 		}
 
+		// Carregar dados relacionados em queries separadas
+		var users []entities.User
+		var professions []entities.Profession
+		var products []entities.Product
+		var funnels []entities.Funnel
+
+		if err := r.db.Where("user_id IN ?", sessionIDs).Find(&users).Error; err != nil {
+			return nil, 0, err
+		}
+
+		if err := r.db.Where("profession_id IN ?", sessionIDs).Find(&professions).Error; err != nil {
+			return nil, 0, err
+		}
+
+		if err := r.db.Where("product_id IN ?", sessionIDs).Find(&products).Error; err != nil {
+			return nil, 0, err
+		}
+
+		if err := r.db.Where("funnel_id IN ?", sessionIDs).Find(&funnels).Error; err != nil {
+			return nil, 0, err
+		}
+
+		// Criar maps para acesso rápido
+		userMap := make(map[string]entities.User)
+		professionMap := make(map[int]entities.Profession)
+		productMap := make(map[int]entities.Product)
+		funnelMap := make(map[int]entities.Funnel)
+
+		for _, user := range users {
+			userMap[user.UserID] = user
+		}
+		for _, profession := range professions {
+			professionMap[profession.ProfessionID] = profession
+		}
+		for _, product := range products {
+			productMap[product.ProductID] = product
+		}
+		for _, funnel := range funnels {
+			funnelMap[funnel.FunnelID] = funnel
+		}
+
+		// Associar dados relacionados
 		for i := range sessions {
-			if s, ok := sessionMap[sessions[i].ID]; ok {
-				sessions[i] = s
+			if user, ok := userMap[sessions[i].UserID.String()]; ok {
+				sessions[i].User = &user
+			}
+			if profession, ok := professionMap[*sessions[i].ProfessionID]; ok {
+				sessions[i].Profession = &profession
+			}
+			if product, ok := productMap[*sessions[i].ProductID]; ok {
+				sessions[i].Product = &product
+			}
+			if funnel, ok := funnelMap[*sessions[i].FunnelID]; ok {
+				sessions[i].Funnel = &funnel
 			}
 		}
 	}
+
+	// Store in cache
+	r.cache.Set(cacheKey, sessions, cache.DefaultExpiration)
 
 	return sessions, total, nil
 }
@@ -188,10 +227,19 @@ func (r *SessionRepository) FindSessionByID(ctx context.Context, id string) (*en
 }
 
 func (r *SessionRepository) CountSessions(from, to time.Time, timeFrom, timeTo string, userID, professionID, productID, funnelID string, isActive *bool) (int64, error) {
+	// Gerar chave de cache baseada nos parâmetros
+	cacheKey := fmt.Sprintf("count_sessions:%v:%v:%s:%s:%s:%s:%s:%s:%v",
+		from, to, timeFrom, timeTo, userID, professionID, productID, funnelID, isActive)
 
-	query := r.db.Model(&entities.Session{})
+	// Tentar obter do cache
+	if cached, found := r.cache.Get(cacheKey); found {
+		return cached.(int64), nil
+	}
 
-	// Adicionar filtros
+	// Query otimizada para contagem
+	query := r.db.Model(&entities.Session{}).Select("COUNT(*)")
+
+	// Aplicar filtros
 	if userID != "" {
 		query = query.Where("user_id = ?", userID)
 	}
@@ -244,7 +292,7 @@ func (r *SessionRepository) CountSessions(from, to time.Time, timeFrom, timeTo s
 			}
 		}
 
-		query = query.Where("\"sessionStart\" BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
+		query = query.Where("session_start BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
 	}
 
 	var count int64
@@ -253,13 +301,33 @@ func (r *SessionRepository) CountSessions(from, to time.Time, timeFrom, timeTo s
 		return 0, err
 	}
 
+	// Armazenar no cache por 5 minutos
+	r.cache.Set(cacheKey, count, 5*time.Minute)
+
 	return count, nil
 }
 
 func (r *SessionRepository) CountSessionsByPeriods(periods []string) (map[string]int64, error) {
+	// Gerar chave de cache baseada nos períodos
+	cacheKey := fmt.Sprintf("count_sessions_periods:%v", periods)
+
+	// Tentar obter do cache
+	if cached, found := r.cache.Get(cacheKey); found {
+		return cached.(map[string]int64), nil
+	}
+
 	result := make(map[string]int64)
 
 	for _, period := range periods {
+		// Gerar chave de cache para o período específico
+		periodCacheKey := fmt.Sprintf("count_sessions_period:%s", period)
+
+		// Tentar obter do cache do período
+		if cached, found := r.cache.Get(periodCacheKey); found {
+			result[period] = cached.(int64)
+			continue
+		}
+
 		// Parse do período
 		date, err := time.Parse("2006-01-02", period)
 		if err != nil {
@@ -281,7 +349,13 @@ func (r *SessionRepository) CountSessionsByPeriods(periods []string) (map[string
 		}
 
 		result[period] = count
+
+		// Armazenar no cache por 5 minutos
+		r.cache.Set(periodCacheKey, count, 5*time.Minute)
 	}
+
+	// Armazenar resultado completo no cache por 5 minutos
+	r.cache.Set(cacheKey, result, 5*time.Minute)
 
 	return result, nil
 }

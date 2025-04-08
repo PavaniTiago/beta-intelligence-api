@@ -245,7 +245,7 @@ func (h *UserHandler) GetLeads(c *fiber.Ctx) error {
 		})
 	}
 
-	leads, total, err := h.userRepo.FindLeads(page, limit, orderBy, from, to, timeFrom, timeTo)
+	leads, total, err := h.userRepo.FindLeads(c.Context(), page, limit, orderBy, from, to, timeFrom, timeTo)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": fmt.Sprintf("Erro ao buscar leads: %v", err),

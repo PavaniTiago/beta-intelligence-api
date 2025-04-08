@@ -2,18 +2,19 @@ package repositories
 
 import (
 	"context"
-
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/PavaniTiago/beta-intelligence-api/internal/domain/entities"
+	"github.com/patrickmn/go-cache"
 	"gorm.io/gorm"
 )
 
 type IUserRepository interface {
 	GetUsers(ctx context.Context, page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string) ([]entities.User, int64, error)
-	FindLeads(page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string) ([]entities.User, int64, error)
+	FindLeads(ctx context.Context, page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string) ([]entities.User, int64, error)
 	FindClients(page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string) ([]entities.User, int64, error)
 	FindAnonymous(page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string) ([]entities.User, int64, error)
 	CountLeads(from, to time.Time, timeFrom, timeTo string) (int64, error)
@@ -27,12 +28,14 @@ type IUserRepository interface {
 }
 
 type UserRepository struct {
-	db *gorm.DB
+	db    *gorm.DB
+	cache *cache.Cache
 }
 
 func NewUserRepository(db *gorm.DB) *UserRepository {
 	return &UserRepository{
-		db: db,
+		db:    db,
+		cache: cache.New(5*time.Minute, 10*time.Minute),
 	}
 }
 
@@ -97,19 +100,67 @@ func (r *UserRepository) GetUsers(ctx context.Context, page, limit int, orderBy 
 }
 
 // FindLeads retorna todos os usuários que são leads com paginação, ordenação e filtro de período
-func (r *UserRepository) FindLeads(page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string) ([]entities.User, int64, error) {
+func (r *UserRepository) FindLeads(ctx context.Context, page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string) ([]entities.User, int64, error) {
+	// Gerar chave de cache baseada nos parâmetros
+	cacheKey := fmt.Sprintf("leads:%d:%d:%s:%v:%v:%s:%s",
+		page, limit, orderBy, from, to, timeFrom, timeTo)
 
-	var leads []entities.User
+	// Tentar obter do cache
+	if cached, found := r.cache.Get(cacheKey); found {
+		return cached.([]entities.User), 0, nil
+	}
+
+	// Adicionar timeout ao contexto
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var users []entities.User
 	var total int64
+
 	offset := (page - 1) * limit
 
-	// Use the combined index for better performance
-	query := r.db.Where(`"isIdentified" = ? AND "isClient" = ?`, true, false)
+	// Query otimizada para contagem
+	countQuery := r.db.WithContext(ctx).Model(&entities.User{}).
+		Where("\"isIdentified\" = ?", true)
 
-	// Verificar se há filtro de período
-	hasDateFilter := !from.IsZero() && !to.IsZero()
+	// Aplicar filtros de data
+	if !from.IsZero() && !to.IsZero() {
+		fromTime := from
+		toTime := to
 
-	if hasDateFilter {
+		if timeFrom != "" {
+			timeParts := strings.Split(timeFrom, ":")
+			if len(timeParts) >= 2 {
+				hour, _ := strconv.Atoi(timeParts[0])
+				min, _ := strconv.Atoi(timeParts[1])
+				fromTime = time.Date(from.Year(), from.Month(), from.Day(), hour, min, 0, 0, from.Location())
+			}
+		}
+
+		if timeTo != "" {
+			timeParts := strings.Split(timeTo, ":")
+			if len(timeParts) >= 2 {
+				hour, _ := strconv.Atoi(timeParts[0])
+				min, _ := strconv.Atoi(timeParts[1])
+				toTime = time.Date(to.Year(), to.Month(), to.Day(), hour, min, 59, 999999999, to.Location())
+			}
+		}
+
+		countQuery = countQuery.Where("created_at BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
+	}
+
+	// Obter total
+	if err := countQuery.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// Query principal otimizada
+	query := r.db.WithContext(ctx).Model(&entities.User{}).
+		Select("user_id, name, email, phone, created_at, \"isIdentified\", \"isClient\"").
+		Where("\"isIdentified\" = ?", true)
+
+	// Aplicar filtros de data
+	if !from.IsZero() && !to.IsZero() {
 		fromTime := from
 		toTime := to
 
@@ -134,28 +185,25 @@ func (r *UserRepository) FindLeads(page, limit int, orderBy string, from, to tim
 		query = query.Where("created_at BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
 	}
 
-	// Separate count query for better performance
-	countQuery := query
-	if err := countQuery.Model(&entities.User{}).Count(&total).Error; err != nil {
-
-		return nil, 0, err
+	// Aplicar ordenação
+	if orderBy != "" {
+		query = query.Order(orderBy)
+	} else {
+		query = query.Order("created_at DESC")
 	}
 
-	if orderBy == "" {
-		orderBy = "user_id asc"
-	}
-	query = query.Order(orderBy)
-
-	// Always use pagination to improve performance
+	// Aplicar paginação
 	query = query.Offset(offset).Limit(limit)
 
-	err := query.Find(&leads).Error
-
-	if err != nil {
+	// Executar query
+	if err := query.Find(&users).Error; err != nil {
 		return nil, 0, err
 	}
 
-	return leads, total, nil
+	// Armazenar no cache por 5 minutos
+	r.cache.Set(cacheKey, users, 5*time.Minute)
+
+	return users, total, nil
 }
 
 // FindClients retorna todos os usuários que são clientes com paginação, ordenação e filtro de período
