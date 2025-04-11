@@ -166,9 +166,10 @@ func (h *EventHandler) GetEvents(c *fiber.Ctx) error {
 		"utm_term":     "u.\"initialUtmTerm\"",
 
 		// Session fields
-		"country": "s.country",
-		"state":   "s.state",
-		"city":    "s.city",
+		"country": "u.\"initialCountry\"",
+		"state":   "u.\"initialRegion\"",
+		"city":    "u.\"initialCity\"",
+		"ip":      "u.\"initialIp\"",
 
 		// Profession fields
 		"profession_name": "professions.profession_name",

@@ -42,4 +42,16 @@ type Event struct {
 
 	// Campo UTM data para compatibilidade com o frontend
 	UtmData *UtmData `json:"utm_data,omitempty" gorm:"-"`
+
+	// Campos geográficos do usuário
+	InitialCountry     string `json:"initialCountry" gorm:"-"`
+	InitialCity        string `json:"initialCity" gorm:"-"`
+	InitialRegion      string `json:"initialRegion" gorm:"-"`
+	InitialIp          string `json:"initialIp" gorm:"-"`
+	InitialCountryCode string `json:"initialCountryCode" gorm:"-"`
+	InitialZip         string `json:"initialZip" gorm:"-"`
+
+	// Relações com surveys
+	Survey         *Survey         `json:"survey,omitempty" gorm:"-"`
+	SurveyResponse *SurveyResponse `json:"survey_response,omitempty" gorm:"-"`
 }

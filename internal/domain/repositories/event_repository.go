@@ -72,7 +72,11 @@ func (r *eventRepository) GetEvents(ctx context.Context, page, limit int, orderB
 		Joins("LEFT JOIN sessions s ON e.session_id = s.session_id").
 		Joins("LEFT JOIN professions ON e.profession_id = professions.profession_id").
 		Joins("LEFT JOIN products ON e.product_id = products.product_id").
-		Joins("LEFT JOIN funnels ON e.funnel_id = funnels.funnel_id")
+		Joins("LEFT JOIN funnels ON e.funnel_id = funnels.funnel_id").
+		// Join com surveys baseado no funnel_id
+		Joins("LEFT JOIN surveys sv ON sv.funnel_id = funnels.funnel_id").
+		// Join com survey_responses baseado no event_id e survey_id
+		Joins("LEFT JOIN survey_responses sr ON (sr.event_id = e.event_id AND sr.survey_id = sv.survey_id)")
 
 	// Se for uma consulta específica para PURCHASE, aplicar diretamente
 	if isPurchaseOnlyQuery {
@@ -406,20 +410,47 @@ func (r *eventRepository) GetEvents(ctx context.Context, page, limit int, orderB
 		s."utmCampaign",
 		s."utmContent",
 		s."utmTerm",
-		s.duration
+		s.duration,
+		sv.survey_id,
+		sv.survey_name,
+		sv.funnel_id as survey_funnel_id,
+		sr.id as survey_response_id,
+		sr.total_score,
+		sr.completed,
+		sr.faixa,
+		sr.created_at as survey_response_created_at
 	`)
 
 	// Modificar preload para incluir User e Session
-	query = query.Preload("User").Preload("Session")
+	query = query.
+		Preload("User").
+		Preload("Session")
 
 	// Executar a consulta para obter eventos
 	if err := query.Find(&events).Error; err != nil {
 		return nil, 0, fmt.Errorf("erro ao buscar eventos: %w", err)
 	}
 
+	// Adicionar log para verificar os dados brutos retornados pela consulta
+	if len(events) > 0 {
+		fmt.Printf("DEBUG CONSULTA CRUA: SQL = %s\n", query.Statement.SQL.String())
+		if events[0].User.UserID != "" {
+			fmt.Printf("DEBUG CONSULTA CRUA: Primeiro usuário - ID=%s, Country=%s, UTM=%s\n",
+				events[0].User.UserID, events[0].User.InitialCountry, events[0].User.InitialUtmSource)
+		} else {
+			fmt.Printf("DEBUG CONSULTA CRUA: Primeiro usuário é NIL\n")
+		}
+	}
+
 	// Se não temos eventos, retornar imediatamente
 	if len(events) == 0 {
 		return events, total, nil
+	}
+
+	// Debug: Verificar dados geo e UTM do primeiro evento logo após a consulta
+	if len(events) > 0 {
+		fmt.Printf("DEBUG CONSULTA INICIAL: Evento %s - User.InitialCountry=%s, User.InitialCity=%s\n",
+			events[0].EventID, events[0].User.InitialCountry, events[0].User.InitialCity)
 	}
 
 	// Converter todos os timestamps para horário de Brasília
@@ -435,117 +466,100 @@ func (r *eventRepository) GetEvents(ctx context.Context, page, limit int, orderB
 
 	// Debug: Imprimir os primeiros eventos para verificar se temos dados UTM
 	if len(events) > 0 {
-		fmt.Printf("DEBUG: Primeiro evento antes do processamento - ID: %s, Tipo: %s\n", events[0].EventID, events[0].EventType)
-		fmt.Printf("DEBUG: Dados UTM do usuário no banco - initialUtmSource: %s\n", events[0].User.InitialUtmSource)
+		fmt.Printf("DEBUG: Evento após processamento UTM - ID: %s\n", events[0].EventID)
 	}
 
-	// Coletar IDs de eventos PURCHASE para processamento especial
-	var purchaseEventIDs []uuid.UUID
-	for _, event := range events {
-		if event.EventType == "PURCHASE" {
-			purchaseEventIDs = append(purchaseEventIDs, event.EventID)
-			fmt.Printf("DEBUG: Evento PURCHASE detectado ID=%s, UserID=%s\n", event.EventID, event.UserID)
-		}
-	}
+	// Processar dados de survey usando os dados já disponíveis no resultado da consulta principal
+	var surveyResponseIDs []string
+	for i, event := range events {
+		if event.FunnelID > 0 {
+			// Extrair dados do survey do resultado do SELECT, que já incluiu esses campos
+			rows, err := r.db.Raw(`SELECT 
+				sv.survey_id, sv.survey_name, sv.funnel_id,
+				sr.id, sr.total_score, sr.completed, sr.faixa, sr.created_at
+				FROM surveys sv
+				LEFT JOIN survey_responses sr ON sr.survey_id = sv.survey_id
+				WHERE sv.funnel_id = ? AND (sr.event_id = ? OR sr.event_id IS NULL)
+				LIMIT 1`, event.FunnelID, event.EventID).Rows()
 
-	// Recarregar explicitamente dados para eventos PURCHASE para garantir dados UTM
-	if len(purchaseEventIDs) > 0 {
-		fmt.Printf("DEBUG: Recarregando dados para %d eventos PURCHASE\n", len(purchaseEventIDs))
-		// Consulta especial apenas para eventos PURCHASE
-		var purchaseUserData []struct {
-			EventID            uuid.UUID `gorm:"column:event_id"`
-			UserID             string    `gorm:"column:user_id"`
-			InitialUtmSource   string    `gorm:"column:initialUtmSource"`
-			InitialUtmMedium   string    `gorm:"column:initialUtmMedium"`
-			InitialUtmCampaign string    `gorm:"column:initialUtmCampaign"`
-			InitialUtmContent  string    `gorm:"column:initialUtmContent"`
-			InitialUtmTerm     string    `gorm:"column:initialUtmTerm"`
-		}
+			if err == nil && rows.Next() {
+				var surveyID int64
+				var surveyName string
+				var surveyFunnelID int
+				var responseID *string
+				var totalScore *int
+				var completed *bool
+				var faixa *string
+				var responseCreatedAt *time.Time
 
-		if err := r.db.Raw(`
-			SELECT e.event_id, u.user_id, u."initialUtmSource", u."initialUtmMedium", 
-			       u."initialUtmCampaign", u."initialUtmContent", u."initialUtmTerm"
-			FROM events e
-			JOIN users u ON e.user_id = u.user_id
-			WHERE e.event_id IN ? AND e.event_type = 'PURCHASE'`,
-			purchaseEventIDs).Scan(&purchaseUserData).Error; err == nil {
+				if err := rows.Scan(&surveyID, &surveyName, &surveyFunnelID, &responseID, &totalScore, &completed, &faixa, &responseCreatedAt); err == nil {
+					// Criar e associar o survey
+					survey := &entities.Survey{
+						SurveyID: surveyID,
+						Name:     surveyName,
+						FunnelID: surveyFunnelID,
+					}
+					events[i].Survey = survey
 
-			// Criar mapa para acessar rapidamente
-			purchaseDataMap := make(map[uuid.UUID]struct {
-				UserID             string
-				InitialUtmSource   string
-				InitialUtmMedium   string
-				InitialUtmCampaign string
-				InitialUtmContent  string
-				InitialUtmTerm     string
-			})
+					// Se temos dados da response, criar e associar
+					if responseID != nil && *responseID != "" {
+						totalScoreVal := 0
+						if totalScore != nil {
+							totalScoreVal = *totalScore
+						}
 
-			for _, data := range purchaseUserData {
-				purchaseDataMap[data.EventID] = struct {
-					UserID             string
-					InitialUtmSource   string
-					InitialUtmMedium   string
-					InitialUtmCampaign string
-					InitialUtmContent  string
-					InitialUtmTerm     string
-				}{
-					UserID:             data.UserID,
-					InitialUtmSource:   data.InitialUtmSource,
-					InitialUtmMedium:   data.InitialUtmMedium,
-					InitialUtmCampaign: data.InitialUtmCampaign,
-					InitialUtmContent:  data.InitialUtmContent,
-					InitialUtmTerm:     data.InitialUtmTerm,
+						completedVal := false
+						if completed != nil {
+							completedVal = *completed
+						}
+
+						faixaVal := ""
+						if faixa != nil {
+							faixaVal = *faixa
+						}
+
+						createdAtVal := time.Now()
+						if responseCreatedAt != nil {
+							createdAtVal = *responseCreatedAt
+						}
+
+						response := &entities.SurveyResponse{
+							ID:         *responseID,
+							SurveyID:   surveyID,
+							EventID:    event.EventID.String(),
+							TotalScore: totalScoreVal,
+							Completed:  completedVal,
+							Faixa:      faixaVal,
+							CreatedAt:  createdAtVal,
+						}
+
+						events[i].SurveyResponse = response
+						surveyResponseIDs = append(surveyResponseIDs, *responseID)
+					}
 				}
-				fmt.Printf("DEBUG: Dados PURCHASE carregados: EventID=%s, UTMSource=%s\n",
-					data.EventID, data.InitialUtmSource)
+				rows.Close()
+			}
+		}
+	}
+
+	// Buscar e anexar as respostas de survey (survey_answers)
+	if len(surveyResponseIDs) > 0 {
+		var answers []entities.SurveyAnswer
+		if err := r.db.Where("survey_response_id IN ?", surveyResponseIDs).Find(&answers).Error; err == nil {
+			// Mapear respostas por ID de survey_response
+			answerMap := make(map[string][]entities.SurveyAnswer)
+			for _, answer := range answers {
+				answerMap[answer.SurveyResponseID] = append(answerMap[answer.SurveyResponseID], answer)
 			}
 
-			// Agora, aplicar esses dados aos eventos correspondentes
-			for i := range events {
-				if events[i].EventType == "PURCHASE" {
-					if data, ok := purchaseDataMap[events[i].EventID]; ok {
-						fmt.Printf("DEBUG: Aplicando dados UTM para PURCHASE %s: %s\n",
-							events[i].EventID, data.InitialUtmSource)
-
-						// Garantir que User não seja nil
-						if events[i].User.UserID == "" {
-							events[i].User = entities.User{
-								UserID:             data.UserID,
-								InitialUtmSource:   data.InitialUtmSource,
-								InitialUtmMedium:   data.InitialUtmMedium,
-								InitialUtmCampaign: data.InitialUtmCampaign,
-								InitialUtmContent:  data.InitialUtmContent,
-								InitialUtmTerm:     data.InitialUtmTerm,
-							}
-						} else {
-							// Atualizar apenas os dados UTM
-							events[i].User.InitialUtmSource = data.InitialUtmSource
-							events[i].User.InitialUtmMedium = data.InitialUtmMedium
-							events[i].User.InitialUtmCampaign = data.InitialUtmCampaign
-							events[i].User.InitialUtmContent = data.InitialUtmContent
-							events[i].User.InitialUtmTerm = data.InitialUtmTerm
-						}
-
-						// Atualizar os campos UTM do evento
-						events[i].UtmSource = data.InitialUtmSource
-						events[i].UtmMedium = data.InitialUtmMedium
-						events[i].UtmCampaign = data.InitialUtmCampaign
-						events[i].UtmContent = data.InitialUtmContent
-						events[i].UtmTerm = data.InitialUtmTerm
-
-						// Também garantir que UtmData esteja preenchido
-						events[i].UtmData = &entities.UtmData{
-							UtmSource:   data.InitialUtmSource,
-							UtmMedium:   data.InitialUtmMedium,
-							UtmCampaign: data.InitialUtmCampaign,
-							UtmContent:  data.InitialUtmContent,
-							UtmTerm:     data.InitialUtmTerm,
-						}
+			// Anexar respostas aos eventos
+			for i, event := range events {
+				if event.SurveyResponse != nil {
+					if answers, ok := answerMap[event.SurveyResponse.ID]; ok {
+						events[i].SurveyResponse.Answers = answers
 					}
 				}
 			}
-		} else {
-			fmt.Printf("ERRO ao recarregar dados PURCHASE: %v\n", err)
 		}
 	}
 
@@ -706,6 +720,22 @@ func (r *eventRepository) GetEvents(ctx context.Context, page, limit int, orderB
 		if user, ok := userMap[events[i].UserID]; ok {
 			events[i].User = user
 
+			// Copiar dados geográficos do usuário para o evento
+			events[i].InitialCountry = user.InitialCountry
+			events[i].InitialCountryCode = user.InitialCountryCode
+			events[i].InitialRegion = user.InitialRegion
+			events[i].InitialCity = user.InitialCity
+			events[i].InitialZip = user.InitialZip
+			events[i].InitialIp = user.InitialIp
+
+			// Logs para depuração dos dados geográficos
+			fmt.Printf("DEBUG: Evento %s - Dados geográficos: country=%s, city=%s, region=%s, ip=%s\n",
+				events[i].EventID, events[i].InitialCountry, events[i].InitialCity,
+				events[i].InitialRegion, events[i].InitialIp)
+			fmt.Printf("DEBUG: Usuário %s - Dados geográficos originais: initialCountry=%s, initialCity=%s, initialRegion=%s, initialIp=%s\n",
+				user.UserID, user.InitialCountry, user.InitialCity,
+				user.InitialRegion, user.InitialIp)
+
 			// Debug para eventos PURCHASE para garantir que os dados UTM estão sendo associados
 			if events[i].EventType == "PURCHASE" {
 				fmt.Printf("DEBUG: Associando UTMs ao evento PURCHASE %s: %s, %s, %s\n",
@@ -741,7 +771,8 @@ func (r *eventRepository) GetEvents(ctx context.Context, page, limit int, orderB
 				// Consulta especial para tentar recuperar os dados UTM para este evento
 				var userDirectQuery entities.User
 				if err := r.db.
-					Select(`user_id, "initialUtmSource", "initialUtmMedium", "initialUtmCampaign", "initialUtmContent", "initialUtmTerm"`).
+					Select(`user_id, "initialUtmSource", "initialUtmMedium", "initialUtmCampaign", "initialUtmContent", "initialUtmTerm",
+					       "initialCountry", "initialCountryCode", "initialRegion", "initialCity", "initialZip", "initialIp"`).
 					Where("user_id = ?", events[i].UserID).
 					First(&userDirectQuery).Error; err == nil {
 
@@ -763,6 +794,14 @@ func (r *eventRepository) GetEvents(ctx context.Context, page, limit int, orderB
 					events[i].UtmCampaign = userDirectQuery.InitialUtmCampaign
 					events[i].UtmContent = userDirectQuery.InitialUtmContent
 					events[i].UtmTerm = userDirectQuery.InitialUtmTerm
+
+					// Copiar também os dados geográficos
+					events[i].InitialCountry = userDirectQuery.InitialCountry
+					events[i].InitialCountryCode = userDirectQuery.InitialCountryCode
+					events[i].InitialRegion = userDirectQuery.InitialRegion
+					events[i].InitialCity = userDirectQuery.InitialCity
+					events[i].InitialZip = userDirectQuery.InitialZip
+					events[i].InitialIp = userDirectQuery.InitialIp
 				}
 			}
 		}
@@ -825,6 +864,21 @@ func (r *eventRepository) GetEvents(ctx context.Context, page, limit int, orderB
 				total = int64(len(filteredEvents))
 			}
 		}
+	}
+
+	// Verificar a estrutura final do primeiro evento (se houver)
+	if len(events) > 0 {
+		event := events[0]
+		fmt.Printf("\nESTRUTURA FINAL DO EVENTO: %s\n", event.EventID)
+		fmt.Printf("  Dados principais: type=%s, source=%s\n", event.EventType, event.EventSource)
+		fmt.Printf("  Dados geo principais: initialCountry=%s, initialCity=%s, initialRegion=%s\n",
+			event.InitialCountry, event.InitialCity, event.InitialRegion)
+		fmt.Printf("  Dados UTM principais: utmSource=%s, utmMedium=%s\n",
+			event.UtmSource, event.UtmMedium)
+		fmt.Printf("  Dados do usuário: initialCountry=%s, initialCity=%s, initialRegion=%s\n",
+			event.User.InitialCountry, event.User.InitialCity, event.User.InitialRegion)
+		fmt.Printf("  Dados UTM do usuário: initialUtmSource=%s, initialUtmMedium=%s\n",
+			event.User.InitialUtmSource, event.User.InitialUtmMedium)
 	}
 
 	return events, total, nil
