@@ -28,3 +28,13 @@ func GenerateDateRange(from, to time.Time) []string {
 
 	return result
 }
+
+// GetBrasilLocation retorna a localização de Brasília (UTC-3)
+func GetBrasilLocation() *time.Location {
+	brazilLocation, err := time.LoadLocation("America/Sao_Paulo")
+	if err != nil {
+		// Fallback para UTC-3 se não conseguir carregar a localização
+		brazilLocation = time.FixedZone("BRT", -3*60*60)
+	}
+	return brazilLocation
+}

@@ -14,6 +14,18 @@ import (
 )
 
 func main() {
+	// Definir localização padrão para Brasília (UTC-3)
+	brasilLocation, err := time.LoadLocation("America/Sao_Paulo")
+	if err != nil {
+		// Fallback para UTC-3 se não conseguir carregar a localização
+		brasilLocation = time.FixedZone("BRT", -3*60*60)
+		log.Printf("⚠️ Usando timezone fixo BRT (UTC-3): %v", err)
+	} else {
+		log.Printf("🕒 Timezone configurado para America/Sao_Paulo (Brasília)")
+	}
+	// Configurar timezone padrão globalmente
+	time.Local = brasilLocation
+
 	// Load environment variables
 	if err := godotenv.Load(); err != nil {
 		log.Println("⚠️ No .env file found, using system environment variables")

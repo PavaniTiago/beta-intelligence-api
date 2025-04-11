@@ -189,6 +189,23 @@ func (r *SessionRepository) GetSessions(ctx context.Context, page, limit int, or
 		for i := range sessions {
 			if user, ok := userMap[sessions[i].UserID.String()]; ok {
 				sessions[i].User = &user
+
+				// Garantir que os dados UTM sejam preenchidos a partir do usuário
+				if sessions[i].UtmSource == "" && user.InitialUtmSource != "" {
+					sessions[i].UtmSource = user.InitialUtmSource
+				}
+				if sessions[i].UtmMedium == "" && user.InitialUtmMedium != "" {
+					sessions[i].UtmMedium = user.InitialUtmMedium
+				}
+				if sessions[i].UtmCampaign == "" && user.InitialUtmCampaign != "" {
+					sessions[i].UtmCampaign = user.InitialUtmCampaign
+				}
+				if sessions[i].UtmContent == "" && user.InitialUtmContent != "" {
+					sessions[i].UtmContent = user.InitialUtmContent
+				}
+				if sessions[i].UtmTerm == "" && user.InitialUtmTerm != "" {
+					sessions[i].UtmTerm = user.InitialUtmTerm
+				}
 			}
 			if profession, ok := professionMap[*sessions[i].ProfessionID]; ok {
 				sessions[i].Profession = &profession
@@ -401,25 +418,53 @@ func (r *SessionRepository) FindActiveSessions(page, limit int, orderBy string) 
 func (r *SessionRepository) GetSessionsDateRange() (time.Time, time.Time, error) {
 	var minDate, maxDate time.Time
 
-	// Get the minimum date
+	// Verificar se existem sessões com datas não nulas
+	var count int64
+	if err := r.db.Model(&entities.Session{}).Where("\"sessionStart\" IS NOT NULL").Count(&count).Error; err != nil {
+		return minDate, maxDate, err
+	}
+
+	if count == 0 {
+		return minDate, maxDate, nil
+	}
+
+	// Get the minimum date usando First em vez de Pluck
+	var minSession entities.Session
 	err := r.db.Model(&entities.Session{}).
+		Where("\"sessionStart\" IS NOT NULL").
 		Order("\"sessionStart\" ASC").
 		Limit(1).
-		Pluck("\"sessionStart\"", &minDate).Error
+		First(&minSession).Error
 
 	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			// Retornar data zero sem erro se não encontrar
+			return minDate, maxDate, nil
+		}
 		return minDate, maxDate, err
 	}
 
-	// Get the maximum date
+	// Usar a data encontrada
+	minDate = minSession.SessionStart
+
+	// Get the maximum date usando First em vez de Pluck
+	var maxSession entities.Session
 	err = r.db.Model(&entities.Session{}).
+		Where("\"sessionStart\" IS NOT NULL").
 		Order("\"sessionStart\" DESC").
 		Limit(1).
-		Pluck("\"sessionStart\"", &maxDate).Error
+		First(&maxSession).Error
 
 	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			// Retornar data zero sem erro se não encontrar
+			return minDate, maxDate, nil
+		}
 		return minDate, maxDate, err
 	}
+
+	// Usar a data encontrada
+	maxDate = maxSession.SessionStart
 
 	return minDate, maxDate, nil
 }

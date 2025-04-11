@@ -26,6 +26,9 @@ func NewUserHandler(userUseCase *usecases.UserUseCase, userRepo *repositories.Us
 }
 
 func (h *UserHandler) GetUsers(c *fiber.Ctx) error {
+	// Obter localização de Brasília
+	brazilLocation := GetBrasilLocation()
+
 	page, err := strconv.Atoi(c.Query("page", "1"))
 	if err != nil || page < 1 {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid 'page' parameter"})
@@ -43,9 +46,9 @@ func (h *UserHandler) GetUsers(c *fiber.Ctx) error {
 	sortDirection := c.Query("sortDirection", "desc")
 	orderBy := fmt.Sprintf("%s %s", sortBy, sortDirection)
 
-	// Parse date filters
+	// Parse date filters usando timezone de Brasília
 	from := time.Time{}
-	to := time.Now()
+	to := time.Now().In(brazilLocation)
 
 	// Parse from and to dates from query params
 	fromStr := c.Query("from", "")
@@ -56,7 +59,7 @@ func (h *UserHandler) GetUsers(c *fiber.Ctx) error {
 		if err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": "Invalid 'from' date format. Use ISO format (e.g., 2023-01-01T00:00:00Z)"})
 		}
-		from = fromTime
+		from = fromTime.In(brazilLocation)
 	}
 
 	if toStr != "" {
@@ -64,7 +67,7 @@ func (h *UserHandler) GetUsers(c *fiber.Ctx) error {
 		if err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": "Invalid 'to' date format. Use ISO format (e.g., 2023-01-31T23:59:59Z)"})
 		}
-		to = toTime
+		to = toTime.In(brazilLocation)
 	}
 
 	// Get time filters
@@ -116,6 +119,9 @@ func (h *UserHandler) GetUsers(c *fiber.Ctx) error {
 }
 
 func (h *UserHandler) GetLeads(c *fiber.Ctx) error {
+	// Obter localização de Brasília
+	brazilLocation := GetBrasilLocation()
+
 	page, err := strconv.Atoi(c.Query("page", "1"))
 	if err != nil || page < 1 {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid 'page' parameter"})
@@ -133,9 +139,9 @@ func (h *UserHandler) GetLeads(c *fiber.Ctx) error {
 	sortDirection := c.Query("sortDirection", "desc")
 	orderBy := fmt.Sprintf("%s %s", sortBy, sortDirection)
 
-	// Parse date filters
+	// Parse date filters usando timezone de Brasília
 	from := time.Time{}
-	to := time.Now()
+	to := time.Now().In(brazilLocation)
 
 	// Parse from and to dates from query params
 	fromStr := c.Query("from", "")
@@ -146,7 +152,7 @@ func (h *UserHandler) GetLeads(c *fiber.Ctx) error {
 		if err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": "Invalid 'from' date format. Use ISO format (e.g., 2023-01-01T00:00:00Z)"})
 		}
-		from = fromTime
+		from = fromTime.In(brazilLocation)
 	}
 
 	if toStr != "" {
@@ -154,7 +160,7 @@ func (h *UserHandler) GetLeads(c *fiber.Ctx) error {
 		if err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": "Invalid 'to' date format. Use ISO format (e.g., 2023-01-31T23:59:59Z)"})
 		}
-		to = toTime
+		to = toTime.In(brazilLocation)
 	}
 
 	// Get time filters
@@ -275,6 +281,9 @@ func (h *UserHandler) GetLeads(c *fiber.Ctx) error {
 }
 
 func (h *UserHandler) GetClients(c *fiber.Ctx) error {
+	// Obter localização de Brasília
+	brazilLocation := GetBrasilLocation()
+
 	page, err := strconv.Atoi(c.Query("page", "1"))
 	if err != nil || page < 1 {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid 'page' parameter"})
@@ -292,9 +301,9 @@ func (h *UserHandler) GetClients(c *fiber.Ctx) error {
 	sortDirection := c.Query("sortDirection", "desc")
 	orderBy := fmt.Sprintf("%s %s", sortBy, sortDirection)
 
-	// Parse date filters
+	// Parse date filters usando timezone de Brasília
 	from := time.Time{}
-	to := time.Now()
+	to := time.Now().In(brazilLocation)
 
 	// Parse from and to dates from query params
 	fromStr := c.Query("from", "")
@@ -305,7 +314,7 @@ func (h *UserHandler) GetClients(c *fiber.Ctx) error {
 		if err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": "Invalid 'from' date format. Use ISO format (e.g., 2023-01-01T00:00:00Z)"})
 		}
-		from = fromTime
+		from = fromTime.In(brazilLocation)
 	}
 
 	if toStr != "" {
@@ -313,7 +322,7 @@ func (h *UserHandler) GetClients(c *fiber.Ctx) error {
 		if err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": "Invalid 'to' date format. Use ISO format (e.g., 2023-01-31T23:59:59Z)"})
 		}
-		to = toTime
+		to = toTime.In(brazilLocation)
 	}
 
 	// Get time filters
@@ -430,6 +439,9 @@ func (h *UserHandler) GetClients(c *fiber.Ctx) error {
 }
 
 func (h *UserHandler) GetAnonymous(c *fiber.Ctx) error {
+	// Obter localização de Brasília
+	brazilLocation := GetBrasilLocation()
+
 	page, err := strconv.Atoi(c.Query("page", "1"))
 	if err != nil || page < 1 {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid 'page' parameter"})
@@ -447,9 +459,9 @@ func (h *UserHandler) GetAnonymous(c *fiber.Ctx) error {
 	sortDirection := c.Query("sortDirection", "desc")
 	orderBy := fmt.Sprintf("%s %s", sortBy, sortDirection)
 
-	// Parse date filters
+	// Parse date filters usando timezone de Brasília
 	from := time.Time{}
-	to := time.Now()
+	to := time.Now().In(brazilLocation)
 
 	// Parse from and to dates from query params
 	fromStr := c.Query("from", "")
@@ -460,7 +472,7 @@ func (h *UserHandler) GetAnonymous(c *fiber.Ctx) error {
 		if err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": "Invalid 'from' date format. Use ISO format (e.g., 2023-01-01T00:00:00Z)"})
 		}
-		from = fromTime
+		from = fromTime.In(brazilLocation)
 	}
 
 	if toStr != "" {
@@ -468,7 +480,7 @@ func (h *UserHandler) GetAnonymous(c *fiber.Ctx) error {
 		if err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": "Invalid 'to' date format. Use ISO format (e.g., 2023-01-31T23:59:59Z)"})
 		}
-		to = toTime
+		to = toTime.In(brazilLocation)
 	}
 
 	// Get time filters
