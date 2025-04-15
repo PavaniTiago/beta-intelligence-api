@@ -26,6 +26,12 @@ func (h *EventHandler) GetEvents(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "10"))
 
+	// Verificar se é para retornar apenas a contagem
+	countOnly := c.Query("count_only", "false") == "true"
+
+	// Verificar se há busca por tipo específico de evento
+	eventType := c.Query("event_type", "")
+
 	// Get sort parameters
 	sortBy := c.Query("sortBy", "event_time")
 	sortDirection := c.Query("sortDirection", "desc")
@@ -313,6 +319,112 @@ func (h *EventHandler) GetEvents(c *fiber.Ctx) error {
 	fmt.Printf("Parâmetros da requisição: page=%d, limit=%d, sortBy=%s, advancedFilters=%+v\n",
 		page, limit, sortBy, advancedFilters)
 
+	// Verificar período e all_data
+	period := c.Query("period", "false") == "true"
+	allData := c.Query("all_data", "false") == "true"
+
+	// Se count_only for true, tratar contagem
+	if countOnly {
+		// Se for para buscar leads por tipo de evento
+		if eventType == "LEAD" {
+			// Tratamento específico para dashboard com períodos
+			periodsParam := c.Query("periods", "")
+
+			// Verificar se é para buscar todos os dados históricos
+			if allData {
+				fmt.Println("Buscando todos os LEADs históricos")
+				// Implementar lógica para buscar intervalo de datas completo de eventos LEAD
+				// Gerar array de todas as datas no intervalo
+				firstDate, lastDate, err := h.eventUseCase.GetEventsDateRange(eventType)
+				if err != nil {
+					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+						"error": fmt.Sprintf("Erro ao obter intervalo de datas de LEADs: %v", err),
+					})
+				}
+
+				// Normalizar as datas para formato de data apenas (sem horas)
+				firstDateOnly := time.Date(firstDate.Year(), firstDate.Month(), firstDate.Day(), 0, 0, 0, 0, firstDate.Location())
+				lastDateOnly := time.Date(lastDate.Year(), lastDate.Month(), lastDate.Day(), 0, 0, 0, 0, lastDate.Location())
+
+				// Gerar array de todas as datas no intervalo
+				dateRange := GenerateDateRange(firstDateOnly, lastDateOnly)
+				result, err := h.eventUseCase.CountEventsByPeriods(dateRange, eventType, advancedFilters)
+				if err != nil {
+					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+						"error": fmt.Sprintf("Erro ao contar LEADs por períodos: %v", err),
+					})
+				}
+
+				return c.JSON(fiber.Map{
+					"periods":    result,
+					"start_date": firstDateOnly.Format("2006-01-02"),
+					"end_date":   lastDateOnly.Format("2006-01-02"),
+					"all_data":   true,
+				})
+			} else if period && (!fromTime.IsZero() && !toTime.IsZero()) {
+				fmt.Println("Buscando LEADs por período específico")
+				// Gerar array de datas no intervalo from-to
+				dateRange := GenerateDateRange(fromTime, toTime)
+				result, err := h.eventUseCase.CountEventsByPeriods(dateRange, eventType, advancedFilters)
+				if err != nil {
+					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+						"error": fmt.Sprintf("Erro ao contar LEADs por períodos: %v", err),
+					})
+				}
+
+				return c.JSON(fiber.Map{
+					"periods": result,
+					"from":    fromTime.Format(time.RFC3339),
+					"to":      toTime.Format(time.RFC3339),
+				})
+			} else if periodsParam != "" {
+				fmt.Println("Buscando LEADs por períodos específicos")
+				periods := strings.Split(periodsParam, ",")
+				result, err := h.eventUseCase.CountEventsByPeriods(periods, eventType, advancedFilters)
+				if err != nil {
+					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+						"error": fmt.Sprintf("Erro ao contar LEADs por períodos: %v", err),
+					})
+				}
+
+				return c.JSON(fiber.Map{
+					"periods": result,
+				})
+			}
+
+			// Contagem normal de LEADs
+			count, err := h.eventUseCase.CountEvents(fromTime, toTime, timeFrom, timeTo, eventType, professionIDs, funnelIDs, advancedFilters, filterCondition)
+			if err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": fmt.Sprintf("Erro ao contar LEADs: %v", err),
+				})
+			}
+
+			return c.JSON(fiber.Map{
+				"count":     count,
+				"from":      fromTime.Format(time.RFC3339),
+				"to":        toTime.Format(time.RFC3339),
+				"time_from": timeFrom,
+				"time_to":   timeTo,
+			})
+		}
+
+		// Para outros tipos de contagem de eventos
+		count, err := h.eventUseCase.CountEvents(fromTime, toTime, timeFrom, timeTo, eventType, professionIDs, funnelIDs, advancedFilters, filterCondition)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": fmt.Sprintf("Erro ao contar eventos: %v", err),
+			})
+		}
+
+		return c.JSON(fiber.Map{
+			"count": count,
+			"from":  fromTime.Format(time.RFC3339),
+			"to":    toTime.Format(time.RFC3339),
+		})
+	}
+
+	// Código existente para buscar eventos quando não é count_only
 	events, total, err := h.eventUseCase.GetEvents(c.Context(), page, limit, orderBy, fromTime, toTime, timeFrom, timeTo, professionIDs, funnelIDs, advancedFilters, filterCondition)
 	if err != nil {
 		fmt.Printf("Error fetching events: %v\n", err)

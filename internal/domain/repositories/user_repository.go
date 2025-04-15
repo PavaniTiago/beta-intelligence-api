@@ -105,8 +105,11 @@ func (r *UserRepository) FindLeads(ctx context.Context, page, limit int, orderBy
 	cacheKey := fmt.Sprintf("leads:%d:%d:%s:%v:%v:%s:%s",
 		page, limit, orderBy, from, to, timeFrom, timeTo)
 
+	fmt.Printf("FindLeads chamado com from=%v, to=%v\n", from, to)
+
 	// Tentar obter do cache
 	if cached, found := r.cache.Get(cacheKey); found {
+		fmt.Println("Retornando dados do cache para leads")
 		return cached.([]entities.User), 0, nil
 	}
 
@@ -121,7 +124,7 @@ func (r *UserRepository) FindLeads(ctx context.Context, page, limit int, orderBy
 
 	// Query otimizada para contagem
 	countQuery := r.db.WithContext(ctx).Model(&entities.User{}).
-		Where("\"isIdentified\" = ?", true)
+		Where(`"isIdentified" = ? AND "isClient" = ?`, true, false)
 
 	// Aplicar filtros de data
 	if !from.IsZero() && !to.IsZero() {
@@ -147,7 +150,14 @@ func (r *UserRepository) FindLeads(ctx context.Context, page, limit int, orderBy
 		}
 
 		countQuery = countQuery.Where("created_at BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
+		fmt.Printf("Aplicando filtro de data no CountQuery: %v até %v\n", fromTime.UTC(), toTime.UTC())
 	}
+
+	// Get SQL for debug (countQuery)
+	countStmt := countQuery.Statement
+	countSQL := countStmt.SQL.String()
+	countVars := countStmt.Vars
+	fmt.Printf("SQL para contagem de leads: %s, Vars: %v\n", countSQL, countVars)
 
 	// Obter total
 	if err := countQuery.Count(&total).Error; err != nil {
@@ -157,7 +167,7 @@ func (r *UserRepository) FindLeads(ctx context.Context, page, limit int, orderBy
 	// Query principal otimizada
 	query := r.db.WithContext(ctx).Model(&entities.User{}).
 		Select("user_id, name, email, phone, created_at, \"isIdentified\", \"isClient\"").
-		Where("\"isIdentified\" = ?", true)
+		Where(`"isIdentified" = ? AND "isClient" = ?`, true, false)
 
 	// Aplicar filtros de data
 	if !from.IsZero() && !to.IsZero() {
@@ -183,7 +193,14 @@ func (r *UserRepository) FindLeads(ctx context.Context, page, limit int, orderBy
 		}
 
 		query = query.Where("created_at BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
+		fmt.Printf("Aplicando filtro de data no Query principal: %v até %v\n", fromTime.UTC(), toTime.UTC())
 	}
+
+	// Get SQL for debug (main query)
+	stmt := query.Statement
+	sql := stmt.SQL.String()
+	vars := stmt.Vars
+	fmt.Printf("SQL para busca de leads: %s, Vars: %v\n", sql, vars)
 
 	// Aplicar ordenação
 	if orderBy != "" {
@@ -319,6 +336,8 @@ func (r *UserRepository) FindAnonymous(page, limit int, orderBy string, from, to
 }
 
 func (r *UserRepository) CountLeads(from, to time.Time, timeFrom, timeTo string) (int64, error) {
+	fmt.Printf("CountLeads chamado com from=%v, to=%v\n", from, to)
+
 	var count int64
 	query := r.db.Model(&entities.User{}).Where(`"isIdentified" = ? AND "isClient" = ?`, true, false)
 
@@ -346,7 +365,14 @@ func (r *UserRepository) CountLeads(from, to time.Time, timeFrom, timeTo string)
 		}
 
 		query = query.Where("created_at BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
+		fmt.Printf("Aplicando filtro de data: %v até %v\n", fromTime.UTC(), toTime.UTC())
 	}
+
+	// Get SQL for debug
+	stmt := query.Statement
+	sql := stmt.SQL.String()
+	vars := stmt.Vars
+	fmt.Printf("SQL para CountLeads: %s, Vars: %v\n", sql, vars)
 
 	err := query.Count(&count).Error
 	if err != nil {
@@ -540,28 +566,51 @@ func (r *UserRepository) CountUsers(from, to time.Time, timeFrom, timeTo string)
 func (r *UserRepository) GetLeadsDateRange() (time.Time, time.Time, error) {
 	var minDate, maxDate time.Time
 
+	fmt.Println("GetLeadsDateRange chamado")
+
 	// Get the minimum date
-	err := r.db.Model(&entities.User{}).
-		Where(`"isIdentified" = ? AND "isClient" = ?`, true, false).
+	var minUser entities.User
+	minQuery := r.db.Model(&entities.User{}).
+		Where(`"isIdentified" = ? AND "isClient" = ? AND created_at IS NOT NULL`, true, false).
 		Order("created_at ASC").
-		Limit(1).
-		Pluck("created_at", &minDate).Error
+		Limit(1)
+
+	// Get SQL for debug
+	minStmt := minQuery.Statement
+	minSQL := minStmt.SQL.String()
+	minVars := minStmt.Vars
+	fmt.Printf("SQL para encontrar data mínima de leads: %s, Vars: %v\n", minSQL, minVars)
+
+	err := minQuery.First(&minUser).Error
 
 	if err != nil {
 		return minDate, maxDate, err
 	}
+
+	minDate = minUser.CreatedAt
 
 	// Get the maximum date
-	err = r.db.Model(&entities.User{}).
-		Where(`"isIdentified" = ? AND "isClient" = ?`, true, false).
+	var maxUser entities.User
+	maxQuery := r.db.Model(&entities.User{}).
+		Where(`"isIdentified" = ? AND "isClient" = ? AND created_at IS NOT NULL`, true, false).
 		Order("created_at DESC").
-		Limit(1).
-		Pluck("created_at", &maxDate).Error
+		Limit(1)
+
+	// Get SQL for debug
+	maxStmt := maxQuery.Statement
+	maxSQL := maxStmt.SQL.String()
+	maxVars := maxStmt.Vars
+	fmt.Printf("SQL para encontrar data máxima de leads: %s, Vars: %v\n", maxSQL, maxVars)
+
+	err = maxQuery.First(&maxUser).Error
 
 	if err != nil {
 		return minDate, maxDate, err
 	}
 
+	maxDate = maxUser.CreatedAt
+
+	fmt.Printf("Intervalo de datas para leads: de %v até %v\n", minDate, maxDate)
 	return minDate, maxDate, nil
 }
 

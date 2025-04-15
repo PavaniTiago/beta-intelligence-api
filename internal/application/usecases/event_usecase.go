@@ -10,6 +10,9 @@ import (
 
 type EventUseCase interface {
 	GetEvents(ctx context.Context, page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string, professionIDs, funnelIDs []int, advancedFilters []repositories.AdvancedFilter, filterCondition string) ([]entities.Event, int64, error)
+	CountEvents(from, to time.Time, timeFrom, timeTo string, eventType string, professionIDs, funnelIDs []int, advancedFilters []repositories.AdvancedFilter, filterCondition string) (int64, error)
+	CountEventsByPeriods(periods []string, eventType string, advancedFilters []repositories.AdvancedFilter) (map[string]int64, error)
+	GetEventsDateRange(eventType string) (time.Time, time.Time, error)
 }
 
 type eventUseCase struct {
@@ -32,4 +35,16 @@ func (uc *eventUseCase) GetEvents(ctx context.Context, page, limit int, orderBy 
 	}
 
 	return uc.eventRepo.GetEvents(ctx, page, limit, orderBy, from, to, timeFrom, timeTo, professionIDs, funnelIDs, advancedFilters, filterCondition)
+}
+
+func (uc *eventUseCase) CountEvents(from, to time.Time, timeFrom, timeTo string, eventType string, professionIDs, funnelIDs []int, advancedFilters []repositories.AdvancedFilter, filterCondition string) (int64, error) {
+	return uc.eventRepo.CountEvents(from, to, timeFrom, timeTo, eventType, professionIDs, funnelIDs, advancedFilters, filterCondition)
+}
+
+func (uc *eventUseCase) CountEventsByPeriods(periods []string, eventType string, advancedFilters []repositories.AdvancedFilter) (map[string]int64, error) {
+	return uc.eventRepo.CountEventsByPeriods(periods, eventType, advancedFilters)
+}
+
+func (uc *eventUseCase) GetEventsDateRange(eventType string) (time.Time, time.Time, error) {
+	return uc.eventRepo.GetEventsDateRange(eventType)
 }

@@ -14,7 +14,7 @@ import (
 )
 
 type ISessionRepository interface {
-	GetSessions(ctx context.Context, page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string, userID, professionID, productID, funnelID string, isActive *bool) ([]entities.Session, int64, error)
+	GetSessions(ctx context.Context, page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string, userID, professionID, productID, funnelID string, isActive *bool, landingPage string) ([]entities.Session, int64, error)
 	FindSessionByID(ctx context.Context, id string) (*entities.Session, error)
 	CountSessions(from, to time.Time, timeFrom, timeTo string, userID, professionID, productID, funnelID string, isActive *bool) (int64, error)
 	CountSessionsByPeriods(periods []string) (map[string]int64, error)
@@ -34,13 +34,16 @@ func NewSessionRepository(db *gorm.DB) *SessionRepository {
 	}
 }
 
-func (r *SessionRepository) GetSessions(ctx context.Context, page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string, userID, professionID, productID, funnelID string, isActive *bool) ([]entities.Session, int64, error) {
+func (r *SessionRepository) GetSessions(ctx context.Context, page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string, userID, professionID, productID, funnelID string, isActive *bool, landingPage string) ([]entities.Session, int64, error) {
 	// Gerar chave de cache baseada nos parâmetros
-	cacheKey := fmt.Sprintf("sessions:%d:%d:%s:%v:%v:%s:%s:%s:%s:%s:%s:%v",
-		page, limit, orderBy, from, to, timeFrom, timeTo, userID, professionID, productID, funnelID, isActive)
+	cacheKey := fmt.Sprintf("sessions:%d:%d:%s:%v:%v:%s:%s:%s:%s:%s:%s:%v:%s",
+		page, limit, orderBy, from, to, timeFrom, timeTo, userID, professionID, productID, funnelID, isActive, landingPage)
+
+	fmt.Printf("GetSessions chamado com from=%v, to=%v\n", from, to)
 
 	// Tentar obter do cache
 	if cached, found := r.cache.Get(cacheKey); found {
+		fmt.Println("Retornando dados do cache para sessões")
 		return cached.([]entities.Session), 0, nil
 	}
 
@@ -55,7 +58,7 @@ func (r *SessionRepository) GetSessions(ctx context.Context, page, limit int, or
 
 	// Otimizar query selecionando apenas campos necessários
 	query := r.db.WithContext(ctx).Model(&entities.Session{}).Select(
-		"session_id, user_id, session_start, is_active, last_activity, country, city, state, ip_address, user_agent, duration",
+		"session_id, user_id, session_start, is_active, last_activity, country, city, state, ip_address, user_agent, duration, landing_page",
 	)
 
 	// Aplicar filtros
@@ -84,12 +87,17 @@ func (r *SessionRepository) GetSessions(ctx context.Context, page, limit int, or
 		}
 	}
 
+	if landingPage != "" {
+		query = query.Where("landing_page LIKE ?", "%"+landingPage+"%")
+	}
+
 	if isActive != nil {
 		query = query.Where("is_active = ?", *isActive)
 	}
 
 	// Verificar se há filtro de período
 	hasDateFilter := !from.IsZero() && !to.IsZero()
+	fmt.Printf("hasDateFilter=%v, from=%v, to=%v\n", hasDateFilter, from, to)
 
 	if hasDateFilter {
 		fromTime := from
@@ -114,7 +122,14 @@ func (r *SessionRepository) GetSessions(ctx context.Context, page, limit int, or
 		}
 
 		query = query.Where("session_start BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
+		fmt.Printf("Aplicando filtro de data: %v até %v\n", fromTime.UTC(), toTime.UTC())
 	}
+
+	// Get SQL for debug
+	stmt := query.Statement
+	sql := stmt.SQL.String()
+	vars := stmt.Vars
+	fmt.Printf("SQL para GetSessions: %s, Vars: %v\n", sql, vars)
 
 	// Get total count in a separate query
 	countQuery := query
@@ -248,6 +263,8 @@ func (r *SessionRepository) CountSessions(from, to time.Time, timeFrom, timeTo s
 	cacheKey := fmt.Sprintf("count_sessions:%v:%v:%s:%s:%s:%s:%s:%s:%v",
 		from, to, timeFrom, timeTo, userID, professionID, productID, funnelID, isActive)
 
+	fmt.Printf("CountSessions chamado com from=%v, to=%v\n", from, to)
+
 	// Tentar obter do cache
 	if cached, found := r.cache.Get(cacheKey); found {
 		return cached.(int64), nil
@@ -310,7 +327,14 @@ func (r *SessionRepository) CountSessions(from, to time.Time, timeFrom, timeTo s
 		}
 
 		query = query.Where("session_start BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
+		fmt.Printf("Aplicando filtro de data: %v até %v\n", fromTime.UTC(), toTime.UTC())
 	}
+
+	// Get SQL for debug
+	stmt := query.Statement
+	sql := stmt.SQL.String()
+	vars := stmt.Vars
+	fmt.Printf("SQL para CountSessions: %s, Vars: %v\n", sql, vars)
 
 	var count int64
 	err := query.Count(&count).Error
@@ -418,6 +442,8 @@ func (r *SessionRepository) FindActiveSessions(page, limit int, orderBy string) 
 func (r *SessionRepository) GetSessionsDateRange() (time.Time, time.Time, error) {
 	var minDate, maxDate time.Time
 
+	fmt.Println("GetSessionsDateRange chamado")
+
 	// Verificar se existem sessões com datas não nulas
 	var count int64
 	if err := r.db.Model(&entities.Session{}).Where("\"sessionStart\" IS NOT NULL").Count(&count).Error; err != nil {
@@ -430,11 +456,18 @@ func (r *SessionRepository) GetSessionsDateRange() (time.Time, time.Time, error)
 
 	// Get the minimum date usando First em vez de Pluck
 	var minSession entities.Session
-	err := r.db.Model(&entities.Session{}).
+	minQuery := r.db.Model(&entities.Session{}).
 		Where("\"sessionStart\" IS NOT NULL").
 		Order("\"sessionStart\" ASC").
-		Limit(1).
-		First(&minSession).Error
+		Limit(1)
+
+	// Get SQL for debug
+	stmt := minQuery.Statement
+	sql := stmt.SQL.String()
+	vars := stmt.Vars
+	fmt.Printf("SQL para encontrar data mínima: %s, Vars: %v\n", sql, vars)
+
+	err := minQuery.First(&minSession).Error
 
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -466,5 +499,6 @@ func (r *SessionRepository) GetSessionsDateRange() (time.Time, time.Time, error)
 	// Usar a data encontrada
 	maxDate = maxSession.SessionStart
 
+	fmt.Printf("Intervalo de datas para sessões: de %v até %v\n", minDate, maxDate)
 	return minDate, maxDate, nil
 }

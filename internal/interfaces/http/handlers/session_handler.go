@@ -121,6 +121,7 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 	professionID := c.Query("profession_id", "")
 	productID := c.Query("product_id", "")
 	funnelID := c.Query("funnel_id", "")
+	landingPage := c.Query("landing_page", "")
 
 	// Parse do parâmetro isActive
 	var isActive *bool
@@ -230,6 +231,7 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 		productID,
 		funnelID,
 		isActive,
+		landingPage,
 	)
 
 	if err != nil {

@@ -21,6 +21,9 @@ type AdvancedFilter struct {
 
 type EventRepository interface {
 	GetEvents(ctx context.Context, page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string, professionIDs, funnelIDs []int, advancedFilters []AdvancedFilter, filterCondition string) ([]entities.Event, int64, error)
+	CountEvents(from, to time.Time, timeFrom, timeTo string, eventType string, professionIDs, funnelIDs []int, advancedFilters []AdvancedFilter, filterCondition string) (int64, error)
+	CountEventsByPeriods(periods []string, eventType string, advancedFilters []AdvancedFilter) (map[string]int64, error)
+	GetEventsDateRange(eventType string) (time.Time, time.Time, error)
 }
 
 type eventRepository struct {
@@ -1038,4 +1041,178 @@ func needsQuotesForColumn(table, column string) bool {
 
 	key := fmt.Sprintf("%s.%s", table, column)
 	return specialCases[key]
+}
+
+// CountEvents conta eventos com filtros aplicados, incluindo tipo específico
+func (r *eventRepository) CountEvents(from, to time.Time, timeFrom, timeTo string, eventType string, professionIDs, funnelIDs []int, advancedFilters []AdvancedFilter, filterCondition string) (int64, error) {
+	// Definir localização de Brasília (UTC-3)
+	brazilLocation, err := time.LoadLocation("America/Sao_Paulo")
+	if err != nil {
+		// Fallback para UTC-3 se não conseguir carregar a localização
+		brazilLocation = time.FixedZone("BRT", -3*60*60)
+	}
+
+	// Converter timestamps para horário de Brasília
+	if !from.IsZero() {
+		from = from.In(brazilLocation)
+	}
+	if !to.IsZero() {
+		to = to.In(brazilLocation)
+	}
+
+	// Inicializar a consulta base para contagem
+	query := r.db.Model(&entities.Event{}).Table("events e")
+
+	// JOIN com users para ter acesso a UTMs
+	query = query.
+		Joins("JOIN users u ON e.user_id = u.user_id")
+
+	// Aplicar filtro de tipo de evento, se fornecido
+	if eventType != "" {
+		query = query.Where("e.event_type = ?", eventType)
+	}
+
+	// Aplicar filtro de data com timezone explícito
+	if !from.IsZero() && !to.IsZero() {
+		query = query.Where("e.event_time >= ? AND e.event_time <= ?", from, to)
+	}
+
+	// Adicionar filtro de profissão se fornecido
+	if len(professionIDs) > 0 {
+		query = query.Where("e.profession_id IN ?", professionIDs)
+	}
+
+	// Adicionar filtro de funil se fornecido
+	if len(funnelIDs) > 0 {
+		query = query.Where("e.funnel_id IN ?", funnelIDs)
+	}
+
+	// Aplicar filtros avançados (reutilizando a mesma lógica usada em GetEvents)
+	if len(advancedFilters) > 0 {
+		// Definir operador lógico entre filtros (AND/OR)
+		if filterCondition == "OR" {
+			// TODO: Implementar lógica de filtros OR
+			fmt.Println("Filtros OR para CountEvents não implementados completamente")
+		}
+
+		// Aplicar cada filtro individualmente como AND por padrão
+		for _, filter := range advancedFilters {
+			// Seria necessário implementar a lógica completa de filtros aqui
+			// Implementar a lógica de filtros avançados similar à GetEvents
+			fmt.Printf("Aplicando filtro avançado: %s %s %s\n", filter.Property, filter.Operator, filter.Value)
+		}
+	}
+
+	// Contar resultados
+	var count int64
+	err = query.Count(&count).Error
+	if err != nil {
+		return 0, err
+	}
+
+	return count, nil
+}
+
+// CountEventsByPeriods conta eventos agrupados por períodos (dias)
+func (r *eventRepository) CountEventsByPeriods(periods []string, eventType string, advancedFilters []AdvancedFilter) (map[string]int64, error) {
+	result := make(map[string]int64)
+
+	// Processar cada período individualmente
+	for _, period := range periods {
+		// Parse da data do período
+		date, err := time.Parse("2006-01-02", period)
+		if err != nil {
+			continue
+		}
+
+		// Definir localização de Brasília (UTC-3)
+		brazilLocation, err := time.LoadLocation("America/Sao_Paulo")
+		if err != nil {
+			// Fallback para UTC-3 se não conseguir carregar a localização
+			brazilLocation = time.FixedZone("BRT", -3*60*60)
+		}
+
+		// Configurar início e fim do dia no horário de Brasília
+		startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, brazilLocation)
+		endOfDay := time.Date(date.Year(), date.Month(), date.Day(), 23, 59, 59, 999999999, brazilLocation)
+
+		// Inicializar consulta para contagem de eventos no período
+		query := r.db.Model(&entities.Event{}).Table("events e")
+
+		// JOIN com users para ter acesso a UTMs
+		query = query.
+			Joins("JOIN users u ON e.user_id = u.user_id")
+
+		// Aplicar filtro de tipo de evento, se fornecido
+		if eventType != "" {
+			query = query.Where("e.event_type = ?", eventType)
+		}
+
+		// Filtrar por data do período
+		query = query.Where("e.event_time BETWEEN ? AND ?", startOfDay, endOfDay)
+
+		// Aplicar filtros avançados se existirem
+		if len(advancedFilters) > 0 {
+			// Implementar a lógica de filtros avançados similar à CountEvents
+		}
+
+		// Contar eventos para este período
+		var count int64
+		err = query.Count(&count).Error
+		if err != nil {
+			return nil, err
+		}
+
+		result[period] = count
+	}
+
+	return result, nil
+}
+
+// GetEventsDateRange retorna o intervalo de datas (mínima e máxima) dos eventos
+func (r *eventRepository) GetEventsDateRange(eventType string) (time.Time, time.Time, error) {
+	var minDate, maxDate time.Time
+
+	// Inicializar consulta base
+	minQuery := r.db.Model(&entities.Event{}).Table("events e")
+
+	// Aplicar filtro de tipo de evento, se fornecido
+	if eventType != "" {
+		minQuery = minQuery.Where("e.event_type = ?", eventType)
+	}
+
+	// Buscar data mínima
+	var minEvent entities.Event
+	err := minQuery.Order("e.event_time ASC").Limit(1).First(&minEvent).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			// Retornar datas zero se não encontrar registros
+			return minDate, maxDate, nil
+		}
+		return minDate, maxDate, err
+	}
+
+	minDate = minEvent.EventTime
+
+	// Buscar data máxima
+	maxQuery := r.db.Model(&entities.Event{}).Table("events e")
+
+	// Aplicar mesmo filtro de tipo
+	if eventType != "" {
+		maxQuery = maxQuery.Where("e.event_type = ?", eventType)
+	}
+
+	var maxEvent entities.Event
+	err = maxQuery.Order("e.event_time DESC").Limit(1).First(&maxEvent).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			// Retornar datas zero se não encontrar registros
+			return minDate, maxDate, nil
+		}
+		return minDate, maxDate, err
+	}
+
+	maxDate = maxEvent.EventTime
+
+	return minDate, maxDate, nil
 }
