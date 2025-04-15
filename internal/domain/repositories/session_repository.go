@@ -16,9 +16,9 @@ import (
 type ISessionRepository interface {
 	GetSessions(ctx context.Context, page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string, userID, professionID, productID, funnelID string, isActive *bool, landingPage string) ([]entities.Session, int64, error)
 	FindSessionByID(ctx context.Context, id string) (*entities.Session, error)
-	CountSessions(from, to time.Time, timeFrom, timeTo string, userID, professionID, productID, funnelID string, isActive *bool) (int64, error)
-	CountSessionsByPeriods(periods []string) (map[string]int64, error)
-	FindActiveSessions(page, limit int, orderBy string) ([]entities.Session, int64, error)
+	CountSessions(from, to time.Time, timeFrom, timeTo string, userID, professionID, productID, funnelID string, isActive *bool, landingPage string) (int64, error)
+	CountSessionsByPeriods(periods []string, landingPage string) (map[string]int64, error)
+	FindActiveSessions(page, limit int, orderBy string, landingPage string) ([]entities.Session, int64, error)
 	GetSessionsDateRange() (time.Time, time.Time, error)
 }
 
@@ -58,7 +58,7 @@ func (r *SessionRepository) GetSessions(ctx context.Context, page, limit int, or
 
 	// Otimizar query selecionando apenas campos necessários
 	query := r.db.WithContext(ctx).Model(&entities.Session{}).Select(
-		"session_id, user_id, session_start, is_active, last_activity, country, city, state, ip_address, user_agent, duration, landing_page",
+		"\"session_id\", \"user_id\", \"sessionStart\", \"isActive\", \"lastActivity\", \"country\", \"city\", \"state\", \"ipAddress\", \"userAgent\", \"duration\", \"landingPage\"",
 	)
 
 	// Aplicar filtros
@@ -88,41 +88,59 @@ func (r *SessionRepository) GetSessions(ctx context.Context, page, limit int, or
 	}
 
 	if landingPage != "" {
-		query = query.Where("landing_page LIKE ?", "%"+landingPage+"%")
+		query = query.Where("\"landingPage\" = ?", landingPage)
 	}
 
 	if isActive != nil {
-		query = query.Where("is_active = ?", *isActive)
+		query = query.Where("\"isActive\" = ?", *isActive)
 	}
 
 	// Verificar se há filtro de período
 	hasDateFilter := !from.IsZero() && !to.IsZero()
 	fmt.Printf("hasDateFilter=%v, from=%v, to=%v\n", hasDateFilter, from, to)
 
-	if hasDateFilter {
+	// Aplicar filtro de data com timezone explícito (se houver)
+	if !from.IsZero() && !to.IsZero() {
 		fromTime := from
 		toTime := to
 
+		// Ajustar hora e minuto se timeFrom fornecido
 		if timeFrom != "" {
 			timeParts := strings.Split(timeFrom, ":")
 			if len(timeParts) >= 2 {
 				hour, _ := strconv.Atoi(timeParts[0])
 				min, _ := strconv.Atoi(timeParts[1])
 				fromTime = time.Date(from.Year(), from.Month(), from.Day(), hour, min, 0, 0, from.Location())
+				fmt.Printf("Sessions: Ajustando horário de início para: %s\n", fromTime.Format("2006-01-02 15:04:05"))
 			}
+		} else {
+			// Se não fornecido, usar o início do dia
+			fromTime = time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, from.Location())
 		}
 
+		// Ajustar hora e minuto se timeTo fornecido
 		if timeTo != "" {
 			timeParts := strings.Split(timeTo, ":")
 			if len(timeParts) >= 2 {
 				hour, _ := strconv.Atoi(timeParts[0])
 				min, _ := strconv.Atoi(timeParts[1])
 				toTime = time.Date(to.Year(), to.Month(), to.Day(), hour, min, 59, 999999999, to.Location())
+				fmt.Printf("Sessions: Ajustando horário de fim para: %s\n", toTime.Format("2006-01-02 15:04:05"))
 			}
+		} else {
+			// Se não fornecido, usar o fim do dia
+			toTime = time.Date(to.Year(), to.Month(), to.Day(), 23, 59, 59, 999999999, to.Location())
 		}
 
-		query = query.Where("session_start BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
-		fmt.Printf("Aplicando filtro de data: %v até %v\n", fromTime.UTC(), toTime.UTC())
+		// Formatar as datas como strings no formato de timestamp SQL
+		fromStr := fromTime.Format("2006-01-02 15:04:05")
+		toStr := toTime.Format("2006-01-02 15:04:05")
+
+		// Aplicar filtro usando a sintaxe com AT TIME ZONE e TIMESTAMP
+		query = query.Where("(\"sessionStart\" AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?",
+			fromStr, toStr)
+
+		fmt.Printf("Sessions: Filtro de data aplicado com timestamptz: %s até %s\n", fromStr, toStr)
 	}
 
 	// Get SQL for debug
@@ -141,7 +159,7 @@ func (r *SessionRepository) GetSessions(ctx context.Context, page, limit int, or
 	if orderBy != "" {
 		query = query.Order(orderBy)
 	} else {
-		query = query.Order("session_start DESC")
+		query = query.Order("\"sessionStart\" DESC")
 	}
 
 	// Apply pagination
@@ -258,12 +276,12 @@ func (r *SessionRepository) FindSessionByID(ctx context.Context, id string) (*en
 	return &session, nil
 }
 
-func (r *SessionRepository) CountSessions(from, to time.Time, timeFrom, timeTo string, userID, professionID, productID, funnelID string, isActive *bool) (int64, error) {
+func (r *SessionRepository) CountSessions(from, to time.Time, timeFrom, timeTo string, userID, professionID, productID, funnelID string, isActive *bool, landingPage string) (int64, error) {
 	// Gerar chave de cache baseada nos parâmetros
-	cacheKey := fmt.Sprintf("count_sessions:%v:%v:%s:%s:%s:%s:%s:%s:%v",
-		from, to, timeFrom, timeTo, userID, professionID, productID, funnelID, isActive)
+	cacheKey := fmt.Sprintf("count_sessions:%v:%v:%s:%s:%s:%s:%s:%s:%v:%s",
+		from, to, timeFrom, timeTo, userID, professionID, productID, funnelID, isActive, landingPage)
 
-	fmt.Printf("CountSessions chamado com from=%v, to=%v\n", from, to)
+	fmt.Printf("CountSessions chamado com from=%v, to=%v, landingPage=%s\n", from, to, landingPage)
 
 	// Tentar obter do cache
 	if cached, found := r.cache.Get(cacheKey); found {
@@ -299,6 +317,11 @@ func (r *SessionRepository) CountSessions(from, to time.Time, timeFrom, timeTo s
 		}
 	}
 
+	if landingPage != "" {
+		// Usar nome exato da coluna com aspas e operador = para match exato
+		query = query.Where("\"landingPage\" = ?", landingPage)
+	}
+
 	if isActive != nil {
 		query = query.Where(`"isActive" = ?`, *isActive)
 	}
@@ -326,8 +349,15 @@ func (r *SessionRepository) CountSessions(from, to time.Time, timeFrom, timeTo s
 			}
 		}
 
-		query = query.Where("session_start BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
-		fmt.Printf("Aplicando filtro de data: %v até %v\n", fromTime.UTC(), toTime.UTC())
+		// Formatar as datas como strings no formato de timestamp SQL
+		fromStr := fromTime.Format("2006-01-02 15:04:05")
+		toStr := toTime.Format("2006-01-02 15:04:05")
+
+		// Aplicar filtro usando apenas timezone 'America/Sao_Paulo'
+		query = query.Where("(\"sessionStart\" AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?",
+			fromStr, toStr)
+
+		fmt.Printf("Sessions Count: Filtro de data aplicado com timezone: %s até %s\n", fromStr, toStr)
 	}
 
 	// Get SQL for debug
@@ -348,9 +378,9 @@ func (r *SessionRepository) CountSessions(from, to time.Time, timeFrom, timeTo s
 	return count, nil
 }
 
-func (r *SessionRepository) CountSessionsByPeriods(periods []string) (map[string]int64, error) {
+func (r *SessionRepository) CountSessionsByPeriods(periods []string, landingPage string) (map[string]int64, error) {
 	// Gerar chave de cache baseada nos períodos
-	cacheKey := fmt.Sprintf("count_sessions_periods:%v", periods)
+	cacheKey := fmt.Sprintf("count_sessions_periods:%v:%s", periods, landingPage)
 
 	// Tentar obter do cache
 	if cached, found := r.cache.Get(cacheKey); found {
@@ -361,7 +391,7 @@ func (r *SessionRepository) CountSessionsByPeriods(periods []string) (map[string
 
 	for _, period := range periods {
 		// Gerar chave de cache para o período específico
-		periodCacheKey := fmt.Sprintf("count_sessions_period:%s", period)
+		periodCacheKey := fmt.Sprintf("count_sessions_period:%s:%s", period, landingPage)
 
 		// Tentar obter do cache do período
 		if cached, found := r.cache.Get(periodCacheKey); found {
@@ -376,13 +406,25 @@ func (r *SessionRepository) CountSessionsByPeriods(periods []string) (map[string
 		}
 
 		// Definir início e fim do dia
-		startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.UTC)
-		endOfDay := time.Date(date.Year(), date.Month(), date.Day(), 23, 59, 59, 999999999, time.UTC)
+		startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
+		endOfDay := time.Date(date.Year(), date.Month(), date.Day(), 23, 59, 59, 999999999, date.Location())
 
-		// Contar sessões no período
+		// Formatar as datas como strings no formato de timestamp SQL
+		startStr := startOfDay.Format("2006-01-02 15:04:05")
+		endStr := endOfDay.Format("2006-01-02 15:04:05")
+
+		// Iniciar a consulta
+		query := r.db.Model(&entities.Session{})
+
+		// Adicionar filtro de landing page se fornecido
+		if landingPage != "" {
+			query = query.Where("\"landingPage\" = ?", landingPage)
+		}
+
+		// Contar sessões no período usando timezone
 		var count int64
-		err = r.db.Model(&entities.Session{}).
-			Where("\"sessionStart\" BETWEEN ? AND ?", startOfDay, endOfDay).
+		err = query.Where("(\"sessionStart\" AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?",
+			startStr, endStr).
 			Count(&count).Error
 
 		if err != nil {
@@ -401,7 +443,7 @@ func (r *SessionRepository) CountSessionsByPeriods(periods []string) (map[string
 	return result, nil
 }
 
-func (r *SessionRepository) FindActiveSessions(page, limit int, orderBy string) ([]entities.Session, int64, error) {
+func (r *SessionRepository) FindActiveSessions(page, limit int, orderBy string, landingPage string) ([]entities.Session, int64, error) {
 	var sessions []entities.Session
 	var total int64
 
@@ -410,6 +452,11 @@ func (r *SessionRepository) FindActiveSessions(page, limit int, orderBy string) 
 
 	// Base query
 	query := r.db.Model(&entities.Session{}).Where(`"isActive" = ?`, true)
+
+	// Adicionar filtro de landing page se fornecido
+	if landingPage != "" {
+		query = query.Where(`"landingPage" = ?`, landingPage)
+	}
 
 	// Get total count
 	if err := query.Count(&total).Error; err != nil {

@@ -8,21 +8,17 @@ import (
 	"github.com/PavaniTiago/beta-intelligence-api/internal/infrastructure/database"
 	"github.com/PavaniTiago/beta-intelligence-api/internal/interfaces/http/middleware"
 	"github.com/PavaniTiago/beta-intelligence-api/internal/interfaces/http/routes"
+	"github.com/PavaniTiago/beta-intelligence-api/internal/utils"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/joho/godotenv"
 )
 
 func main() {
-	// Definir localização padrão para Brasília (UTC-3)
-	brasilLocation, err := time.LoadLocation("America/Sao_Paulo")
-	if err != nil {
-		// Fallback para UTC-3 se não conseguir carregar a localização
-		brasilLocation = time.FixedZone("BRT", -3*60*60)
-		log.Printf("⚠️ Usando timezone fixo BRT (UTC-3): %v", err)
-	} else {
-		log.Printf("🕒 Timezone configurado para America/Sao_Paulo (Brasília)")
-	}
+	// Definir localização padrão para Brasília (UTC-3) usando a função centralizada
+	brasilLocation := utils.GetBrasilLocation()
+	log.Printf("🕒 Timezone configurado para America/Sao_Paulo (Brasília)")
+
 	// Configurar timezone padrão globalmente
 	time.Local = brasilLocation
 

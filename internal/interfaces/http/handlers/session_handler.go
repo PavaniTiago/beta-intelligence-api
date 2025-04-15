@@ -121,7 +121,7 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 	professionID := c.Query("profession_id", "")
 	productID := c.Query("product_id", "")
 	funnelID := c.Query("funnel_id", "")
-	landingPage := c.Query("landing_page", "")
+	landingPage := c.Query("landingPage", "")
 
 	// Parse do parâmetro isActive
 	var isActive *bool
@@ -157,7 +157,7 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 
 			// Gerar array de todas as datas no intervalo
 			dateRange := GenerateDateRange(firstDateOnly, lastDateOnly)
-			result, err := h.sessionUseCase.CountSessionsByPeriods(dateRange)
+			result, err := h.sessionUseCase.CountSessionsByPeriods(dateRange, landingPage)
 			if err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 					"error": fmt.Sprintf("Error counting sessions by periods: %v", err),
@@ -165,15 +165,16 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 			}
 
 			return c.JSON(fiber.Map{
-				"periods":    result,
-				"start_date": firstDateOnly.Format("2006-01-02"),
-				"end_date":   lastDateOnly.Format("2006-01-02"),
-				"all_data":   true,
+				"periods":     result,
+				"start_date":  firstDateOnly.Format("2006-01-02"),
+				"end_date":    lastDateOnly.Format("2006-01-02"),
+				"all_data":    true,
+				"landingPage": landingPage,
 			})
 		} else if period && hasDateFilter {
 			// Gerar array de datas no intervalo from-to
 			dateRange := GenerateDateRange(from, to)
-			result, err := h.sessionUseCase.CountSessionsByPeriods(dateRange)
+			result, err := h.sessionUseCase.CountSessionsByPeriods(dateRange, landingPage)
 			if err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 					"error": fmt.Sprintf("Error counting sessions by periods: %v", err),
@@ -181,13 +182,14 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 			}
 
 			return c.JSON(fiber.Map{
-				"periods": result,
-				"from":    fromStr,
-				"to":      toStr,
+				"periods":     result,
+				"from":        fromStr,
+				"to":          toStr,
+				"landingPage": landingPage,
 			})
 		} else if periodsParam != "" {
 			periods := strings.Split(periodsParam, ",")
-			result, err := h.sessionUseCase.CountSessionsByPeriods(periods)
+			result, err := h.sessionUseCase.CountSessionsByPeriods(periods, landingPage)
 			if err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 					"error": fmt.Sprintf("Error counting sessions by periods: %v", err),
@@ -195,12 +197,13 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 			}
 
 			return c.JSON(fiber.Map{
-				"periods": result,
+				"periods":     result,
+				"landingPage": landingPage,
 			})
 		}
 
 		// Contagem normal
-		count, err := h.sessionUseCase.CountSessions(from, to, timeFrom, timeTo, userID, professionID, productID, funnelID, isActive)
+		count, err := h.sessionUseCase.CountSessions(from, to, timeFrom, timeTo, userID, professionID, productID, funnelID, isActive, landingPage)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": fmt.Sprintf("Error counting sessions: %v", err),
@@ -283,13 +286,16 @@ func (h *SessionHandler) GetActiveSessions(c *fiber.Ctx) error {
 	sortDirection := c.Query("sortDirection", "desc")
 	orderBy := fmt.Sprintf("%s %s", sortBy, sortDirection)
 
+	// Obter parâmetro landingPage
+	landingPage := c.Query("landingPage", "")
+
 	// Verificar se é para retornar apenas a contagem
 	countOnly := c.Query("count_only", "false") == "true"
 
 	if countOnly {
 		// Para count_only, usamos o método normal com isActive = true
 		isActiveVal := true
-		count, err := h.sessionUseCase.CountSessions(time.Time{}, time.Time{}, "", "", "", "", "", "", &isActiveVal)
+		count, err := h.sessionUseCase.CountSessions(time.Time{}, time.Time{}, "", "", "", "", "", "", &isActiveVal, landingPage)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": fmt.Sprintf("Error counting active sessions: %v", err),
@@ -306,7 +312,7 @@ func (h *SessionHandler) GetActiveSessions(c *fiber.Ctx) error {
 	fmt.Printf("Buscando sessões ativas em: %s\n", now.Format(time.RFC3339))
 
 	// Buscar sessões ativas
-	sessions, total, err := h.sessionUseCase.FindActiveSessions(page, limit, orderBy)
+	sessions, total, err := h.sessionUseCase.FindActiveSessions(page, limit, orderBy, landingPage)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": fmt.Sprintf("Error retrieving active sessions: %v", err),
@@ -328,6 +334,7 @@ func (h *SessionHandler) GetActiveSessions(c *fiber.Ctx) error {
 		"totalPages":    totalPages,
 		"sortBy":        sortBy,
 		"sortDirection": sortDirection,
+		"landingPage":   landingPage,
 	})
 }
 

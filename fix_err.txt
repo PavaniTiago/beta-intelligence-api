@@ -1,0 +1,1 @@
+        if err := query.Count(&count).Error; err != nil {

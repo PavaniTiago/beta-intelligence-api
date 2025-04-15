@@ -75,7 +75,7 @@ func (r *UserRepository) GetUsers(ctx context.Context, page, limit int, orderBy 
 		}
 
 		// Use the created_at index
-		query = query.Where("created_at BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
+		query = query.Where("created_at >= ?::timestamptz AND created_at <= ?::timestamptz", fromTime, toTime)
 	}
 
 	// Get the total count in a separate query to improve performance
@@ -149,8 +149,8 @@ func (r *UserRepository) FindLeads(ctx context.Context, page, limit int, orderBy
 			}
 		}
 
-		countQuery = countQuery.Where("created_at BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
-		fmt.Printf("Aplicando filtro de data no CountQuery: %v até %v\n", fromTime.UTC(), toTime.UTC())
+		countQuery = countQuery.Where("created_at >= ?::timestamptz AND created_at <= ?::timestamptz", fromTime, toTime)
+		fmt.Printf("Aplicando filtro de data no CountQuery: %v até %v\n", fromTime, toTime)
 	}
 
 	// Get SQL for debug (countQuery)
@@ -192,8 +192,8 @@ func (r *UserRepository) FindLeads(ctx context.Context, page, limit int, orderBy
 			}
 		}
 
-		query = query.Where("created_at BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
-		fmt.Printf("Aplicando filtro de data no Query principal: %v até %v\n", fromTime.UTC(), toTime.UTC())
+		query = query.Where("created_at >= ?::timestamptz AND created_at <= ?::timestamptz", fromTime, toTime)
+		fmt.Printf("Aplicando filtro de data no Query principal: %v até %v\n", fromTime, toTime)
 	}
 
 	// Get SQL for debug (main query)
@@ -257,7 +257,7 @@ func (r *UserRepository) FindClients(page, limit int, orderBy string, from, to t
 			}
 		}
 
-		query = query.Where("created_at BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
+		query = query.Where("created_at >= ?::timestamptz AND created_at <= ?::timestamptz", fromTime, toTime)
 	}
 
 	// Separate count query
@@ -315,7 +315,7 @@ func (r *UserRepository) FindAnonymous(page, limit int, orderBy string, from, to
 			}
 		}
 
-		query = query.Where("created_at BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
+		query = query.Where("created_at >= ?::timestamptz AND created_at <= ?::timestamptz", fromTime, toTime)
 	}
 
 	if err := query.Model(&entities.User{}).Count(&total).Error; err != nil {
@@ -364,8 +364,8 @@ func (r *UserRepository) CountLeads(from, to time.Time, timeFrom, timeTo string)
 			}
 		}
 
-		query = query.Where("created_at BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
-		fmt.Printf("Aplicando filtro de data: %v até %v\n", fromTime.UTC(), toTime.UTC())
+		query = query.Where("created_at >= ?::timestamptz AND created_at <= ?::timestamptz", fromTime, toTime)
+		fmt.Printf("Aplicando filtro de data: %v até %v\n", fromTime, toTime)
 	}
 
 	// Get SQL for debug
@@ -401,7 +401,7 @@ func (r *UserRepository) CountLeadsByPeriods(periods []string) (map[string]int64
 		var count int64
 		err = r.db.Model(&entities.User{}).
 			Where(`"isIdentified" = ? AND "isClient" = ?`, true, false).
-			Where("created_at BETWEEN ? AND ?", startOfDay, endOfDay).
+			Where("created_at >= ?::timestamptz AND created_at <= ?::timestamptz", startOfDay, endOfDay).
 			Count(&count).Error
 
 		if err != nil {
@@ -442,7 +442,7 @@ func (r *UserRepository) CountClients(from, to time.Time, timeFrom, timeTo strin
 			}
 		}
 
-		query = query.Where("created_at BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
+		query = query.Where("created_at >= ?::timestamptz AND created_at <= ?::timestamptz", fromTime, toTime)
 	}
 
 	err := query.Count(&count).Error
@@ -471,7 +471,7 @@ func (r *UserRepository) CountClientsByPeriods(periods []string) (map[string]int
 		var count int64
 		err = r.db.Model(&entities.User{}).
 			Where(`"isClient" = ?`, true).
-			Where("created_at BETWEEN ? AND ?", startOfDay, endOfDay).
+			Where("created_at >= ?::timestamptz AND created_at <= ?::timestamptz", startOfDay, endOfDay).
 			Count(&count).Error
 
 		if err != nil {
@@ -512,7 +512,7 @@ func (r *UserRepository) CountAnonymous(from, to time.Time, timeFrom, timeTo str
 			}
 		}
 
-		query = query.Where("created_at BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
+		query = query.Where("created_at >= ?::timestamptz AND created_at <= ?::timestamptz", fromTime, toTime)
 	}
 
 	err := query.Count(&count).Error
@@ -551,7 +551,7 @@ func (r *UserRepository) CountUsers(from, to time.Time, timeFrom, timeTo string)
 			}
 		}
 
-		query = query.Where("created_at BETWEEN ? AND ?", fromTime.UTC(), toTime.UTC())
+		query = query.Where("created_at >= ?::timestamptz AND created_at <= ?::timestamptz", fromTime, toTime)
 	}
 
 	err := query.Count(&count).Error

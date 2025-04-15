@@ -3,10 +3,12 @@ package repositories
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/PavaniTiago/beta-intelligence-api/internal/domain/entities"
+	"github.com/PavaniTiago/beta-intelligence-api/internal/utils"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -38,12 +40,8 @@ func (r *eventRepository) GetEvents(ctx context.Context, page, limit int, orderB
 	var events []entities.Event
 	var total int64
 
-	// Definir localização de Brasília (UTC-3)
-	brazilLocation, err := time.LoadLocation("America/Sao_Paulo")
-	if err != nil {
-		// Fallback para UTC-3 se não conseguir carregar a localização
-		brazilLocation = time.FixedZone("BRT", -3*60*60)
-	}
+	// Obter localização de Brasília usando a função centralizada
+	brazilLocation := utils.GetBrasilLocation()
 
 	// Converter timestamps para horário de Brasília
 	if !from.IsZero() {
@@ -89,7 +87,46 @@ func (r *eventRepository) GetEvents(ctx context.Context, page, limit int, orderB
 
 	// Aplicar filtro de data com timezone explícito (se houver)
 	if !from.IsZero() && !to.IsZero() {
-		baseQuery = baseQuery.Where("e.event_time >= ? AND e.event_time <= ?", from, to)
+		fromTime := from
+		toTime := to
+
+		// Ajustar hora e minuto se timeFrom fornecido
+		if timeFrom != "" {
+			timeParts := strings.Split(timeFrom, ":")
+			if len(timeParts) >= 2 {
+				hour, _ := strconv.Atoi(timeParts[0])
+				min, _ := strconv.Atoi(timeParts[1])
+				fromTime = time.Date(from.Year(), from.Month(), from.Day(), hour, min, 0, 0, from.Location())
+				fmt.Printf("Events: Ajustando horário de início para: %s\n", fromTime.Format("2006-01-02 15:04:05"))
+			}
+		} else {
+			// Se não fornecido, usar o início do dia
+			fromTime = time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, from.Location())
+		}
+
+		// Ajustar hora e minuto se timeTo fornecido
+		if timeTo != "" {
+			timeParts := strings.Split(timeTo, ":")
+			if len(timeParts) >= 2 {
+				hour, _ := strconv.Atoi(timeParts[0])
+				min, _ := strconv.Atoi(timeParts[1])
+				toTime = time.Date(to.Year(), to.Month(), to.Day(), hour, min, 59, 999999999, to.Location())
+				fmt.Printf("Events: Ajustando horário de fim para: %s\n", toTime.Format("2006-01-02 15:04:05"))
+			}
+		} else {
+			// Se não fornecido, usar o fim do dia
+			toTime = time.Date(to.Year(), to.Month(), to.Day(), 23, 59, 59, 999999999, to.Location())
+		}
+
+		// Formatar as datas como strings no formato de timestamp SQL
+		fromStr := fromTime.Format("2006-01-02 15:04:05")
+		toStr := toTime.Format("2006-01-02 15:04:05")
+
+		// Aplicar filtro usando apenas timezone 'America/Sao_Paulo' sem converter de UTC primeiro
+		baseQuery = baseQuery.Where("(e.event_time AT TIME ZONE 'America/Sao_Paulo') BETWEEN TIMESTAMP ? AND TIMESTAMP ?",
+			fromStr, toStr)
+
+		fmt.Printf("Events: Filtro de data aplicado com timezone: %s até %s\n", fromStr, toStr)
 	}
 
 	// Adicionar filtro de profissão se fornecido
@@ -1045,12 +1082,8 @@ func needsQuotesForColumn(table, column string) bool {
 
 // CountEvents conta eventos com filtros aplicados, incluindo tipo específico
 func (r *eventRepository) CountEvents(from, to time.Time, timeFrom, timeTo string, eventType string, professionIDs, funnelIDs []int, advancedFilters []AdvancedFilter, filterCondition string) (int64, error) {
-	// Definir localização de Brasília (UTC-3)
-	brazilLocation, err := time.LoadLocation("America/Sao_Paulo")
-	if err != nil {
-		// Fallback para UTC-3 se não conseguir carregar a localização
-		brazilLocation = time.FixedZone("BRT", -3*60*60)
-	}
+	// Obter localização de Brasília usando a função centralizada
+	brazilLocation := utils.GetBrasilLocation()
 
 	// Converter timestamps para horário de Brasília
 	if !from.IsZero() {
@@ -1072,9 +1105,48 @@ func (r *eventRepository) CountEvents(from, to time.Time, timeFrom, timeTo strin
 		query = query.Where("e.event_type = ?", eventType)
 	}
 
-	// Aplicar filtro de data com timezone explícito
+	// Aplicar filtro de data
 	if !from.IsZero() && !to.IsZero() {
-		query = query.Where("e.event_time >= ? AND e.event_time <= ?", from, to)
+		fromTime := from
+		toTime := to
+
+		// Ajustar hora e minuto se timeFrom fornecido
+		if timeFrom != "" {
+			timeParts := strings.Split(timeFrom, ":")
+			if len(timeParts) >= 2 {
+				hour, _ := strconv.Atoi(timeParts[0])
+				min, _ := strconv.Atoi(timeParts[1])
+				fromTime = time.Date(from.Year(), from.Month(), from.Day(), hour, min, 0, 0, from.Location())
+				fmt.Printf("CountEvents: Ajustando horário de início para: %s\n", fromTime.Format("2006-01-02 15:04:05"))
+			}
+		} else {
+			// Se não fornecido, usar o início do dia
+			fromTime = time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, from.Location())
+		}
+
+		// Ajustar hora e minuto se timeTo fornecido
+		if timeTo != "" {
+			timeParts := strings.Split(timeTo, ":")
+			if len(timeParts) >= 2 {
+				hour, _ := strconv.Atoi(timeParts[0])
+				min, _ := strconv.Atoi(timeParts[1])
+				toTime = time.Date(to.Year(), to.Month(), to.Day(), hour, min, 59, 999999999, to.Location())
+				fmt.Printf("CountEvents: Ajustando horário de fim para: %s\n", toTime.Format("2006-01-02 15:04:05"))
+			}
+		} else {
+			// Se não fornecido, usar o fim do dia
+			toTime = time.Date(to.Year(), to.Month(), to.Day(), 23, 59, 59, 999999999, to.Location())
+		}
+
+		// Formatar as datas como strings no formato de timestamp SQL
+		fromStr := fromTime.Format("2006-01-02 15:04:05")
+		toStr := toTime.Format("2006-01-02 15:04:05")
+
+		// Aplicar filtro usando apenas timezone 'America/Sao_Paulo' sem converter de UTC primeiro
+		query = query.Where("(e.event_time AT TIME ZONE 'America/Sao_Paulo') BETWEEN TIMESTAMP ? AND TIMESTAMP ?",
+			fromStr, toStr)
+
+		fmt.Printf("CountEvents: Filtro de data aplicado com timezone: %s até %s\n", fromStr, toStr)
 	}
 
 	// Adicionar filtro de profissão se fornecido
@@ -1105,8 +1177,7 @@ func (r *eventRepository) CountEvents(from, to time.Time, timeFrom, timeTo strin
 
 	// Contar resultados
 	var count int64
-	err = query.Count(&count).Error
-	if err != nil {
+	if err := query.Count(&count).Error; err != nil {
 		return 0, err
 	}
 
@@ -1117,19 +1188,15 @@ func (r *eventRepository) CountEvents(from, to time.Time, timeFrom, timeTo strin
 func (r *eventRepository) CountEventsByPeriods(periods []string, eventType string, advancedFilters []AdvancedFilter) (map[string]int64, error) {
 	result := make(map[string]int64)
 
+	// Obter localização de Brasília usando a função centralizada
+	brazilLocation := utils.GetBrasilLocation()
+
 	// Processar cada período individualmente
 	for _, period := range periods {
 		// Parse da data do período
 		date, err := time.Parse("2006-01-02", period)
 		if err != nil {
 			continue
-		}
-
-		// Definir localização de Brasília (UTC-3)
-		brazilLocation, err := time.LoadLocation("America/Sao_Paulo")
-		if err != nil {
-			// Fallback para UTC-3 se não conseguir carregar a localização
-			brazilLocation = time.FixedZone("BRT", -3*60*60)
 		}
 
 		// Configurar início e fim do dia no horário de Brasília
@@ -1149,7 +1216,7 @@ func (r *eventRepository) CountEventsByPeriods(periods []string, eventType strin
 		}
 
 		// Filtrar por data do período
-		query = query.Where("e.event_time BETWEEN ? AND ?", startOfDay, endOfDay)
+		query = query.Where("(e.event_time AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?", startOfDay.Format("2006-01-02 15:04:05"), endOfDay.Format("2006-01-02 15:04:05"))
 
 		// Aplicar filtros avançados se existirem
 		if len(advancedFilters) > 0 {
@@ -1158,8 +1225,7 @@ func (r *eventRepository) CountEventsByPeriods(periods []string, eventType strin
 
 		// Contar eventos para este período
 		var count int64
-		err = query.Count(&count).Error
-		if err != nil {
+		if err := query.Count(&count).Error; err != nil {
 			return nil, err
 		}
 

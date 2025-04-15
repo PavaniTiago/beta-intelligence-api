@@ -2,6 +2,7 @@ package database
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"time"
 
@@ -41,6 +42,17 @@ func SetupDatabase() (*gorm.DB, error) {
 	sqlDB.SetMaxIdleConns(20)           // Increased from 10
 	sqlDB.SetMaxOpenConns(150)          // Increased from 100
 	sqlDB.SetConnMaxLifetime(time.Hour) // Reuse connections for up to an hour
+
+	// Configurar timezone padrão para todas as conexões - configuração inicial
+	if err := db.Exec("SET timezone = 'America/Sao_Paulo'").Error; err != nil {
+		log.Printf("⚠️ Aviso: não foi possível configurar timezone do banco: %v", err)
+	} else {
+		log.Printf("🕒 Timezone do banco configurado para America/Sao_Paulo (Brasília)")
+	}
+
+	// Registrar middlewares para garantir que o timezone seja definido em todas as consultas
+	// O middleware será aplicado apenas quando necessário e com proteção contra recursão
+	RegisterMiddlewares(db)
 
 	// Apply database migrations and indexes
 	if err := migrations.Migrate(db); err != nil {
