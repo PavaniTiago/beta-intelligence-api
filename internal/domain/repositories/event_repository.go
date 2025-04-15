@@ -123,7 +123,7 @@ func (r *eventRepository) GetEvents(ctx context.Context, page, limit int, orderB
 		toStr := toTime.Format("2006-01-02 15:04:05")
 
 		// Aplicar filtro usando apenas timezone 'America/Sao_Paulo' sem converter de UTC primeiro
-		baseQuery = baseQuery.Where("(e.event_time AT TIME ZONE 'America/Sao_Paulo') BETWEEN TIMESTAMP ? AND TIMESTAMP ?",
+		baseQuery = baseQuery.Where("(e.event_time AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?",
 			fromStr, toStr)
 
 		fmt.Printf("Events: Filtro de data aplicado com timezone: %s até %s\n", fromStr, toStr)
@@ -1143,7 +1143,7 @@ func (r *eventRepository) CountEvents(from, to time.Time, timeFrom, timeTo strin
 		toStr := toTime.Format("2006-01-02 15:04:05")
 
 		// Aplicar filtro usando apenas timezone 'America/Sao_Paulo' sem converter de UTC primeiro
-		query = query.Where("(e.event_time AT TIME ZONE 'America/Sao_Paulo') BETWEEN TIMESTAMP ? AND TIMESTAMP ?",
+		query = query.Where("(e.event_time AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?",
 			fromStr, toStr)
 
 		fmt.Printf("CountEvents: Filtro de data aplicado com timezone: %s até %s\n", fromStr, toStr)
