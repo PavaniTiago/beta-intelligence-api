@@ -23,15 +23,15 @@ func (r *professionRepository) GetProfessions(page, limit int, orderBy string) (
 	var professions []entities.Profession
 	var total int64
 
-	// Get total count
-	if err := r.db.Model(&entities.Profession{}).Count(&total).Error; err != nil {
+	// Get total count - only count non-testing professions
+	if err := r.db.Model(&entities.Profession{}).Where("is_testing = ?", false).Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
-	fmt.Printf("Total professions in database: %d\n", total)
+	fmt.Printf("Total non-testing professions in database: %d\n", total)
 
-	// Get results
-	query := r.db.Model(&entities.Profession{})
+	// Get results - only get non-testing professions
+	query := r.db.Model(&entities.Profession{}).Where("is_testing = ?", false)
 
 	if orderBy != "" {
 		query = query.Order(orderBy)

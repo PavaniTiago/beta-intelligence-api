@@ -40,6 +40,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 	professionRepo := repositories.NewProfessionRepository(db)
 	funnelRepo := repositories.NewFunnelRepository(db)
 	sessionRepo := repositories.NewSessionRepository(db)
+	productRepo := repositories.NewProductRepository(db)
 
 	// Use Cases
 	userUseCase := usecases.NewUserUseCase(userRepo)
@@ -47,6 +48,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 	professionUseCase := usecases.NewProfessionUseCase(professionRepo)
 	funnelUseCase := usecases.NewFunnelUseCase(funnelRepo)
 	sessionUseCase := usecases.NewSessionUseCase(sessionRepo)
+	productUseCase := usecases.NewProductUseCase(productRepo)
 
 	// Handlers
 	userHandler := handlers.NewUserHandler(userUseCase, userRepo)
@@ -54,6 +56,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 	professionHandler := handlers.NewProfessionHandler(professionUseCase)
 	funnelHandler := handlers.NewFunnelHandler(funnelUseCase)
 	sessionHandler := handlers.NewSessionHandler(sessionUseCase)
+	productHandler := handlers.NewProductHandler(productUseCase)
 
 	// Create handlers struct
 	handlersStruct := handlers.NewHandlers(nil, db)
@@ -81,6 +84,10 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 
 	// Funnels routes
 	groups.Public.Get("/funnels", funnelHandler.GetFunnels)
+
+	// Products routes
+	groups.Public.Get("/products/with-funnels", productHandler.GetProductsWithFunnels)
+	groups.Public.Get("/professions/:profession_id/funnels", productHandler.GetFunnelsByProfessionID)
 
 	// Sessions routes
 	groups.Session.Get("/", sessionHandler.GetSessions)

@@ -30,8 +30,8 @@ func (uc *SessionUseCase) CountSessions(from, to time.Time, timeFrom, timeTo str
 	return uc.sessionRepo.CountSessions(from, to, timeFrom, timeTo, userID, professionID, productID, funnelID, isActive, landingPage)
 }
 
-func (uc *SessionUseCase) CountSessionsByPeriods(periods []string, landingPage string) (map[string]int64, error) {
-	return uc.sessionRepo.CountSessionsByPeriods(periods, landingPage)
+func (uc *SessionUseCase) CountSessionsByPeriods(periods []string, landingPage string, funnelID string, professionID string) (map[string]int64, error) {
+	return uc.sessionRepo.CountSessionsByPeriods(periods, landingPage, funnelID, professionID)
 }
 
 func (uc *SessionUseCase) GetSessionsDateRange() (time.Time, time.Time, error) {

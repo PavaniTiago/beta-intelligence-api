@@ -346,9 +346,21 @@ func (h *EventHandler) GetEvents(c *fiber.Ctx) error {
 				firstDateOnly := time.Date(firstDate.Year(), firstDate.Month(), firstDate.Day(), 0, 0, 0, 0, firstDate.Location())
 				lastDateOnly := time.Date(lastDate.Year(), lastDate.Month(), lastDate.Day(), 0, 0, 0, 0, lastDate.Location())
 
+				// Pegar o funnel_id, se existir
+				var funnelID int
+				if len(funnelIDs) > 0 {
+					funnelID = funnelIDs[0]
+				}
+
+				// Pegar o profession_id, se existir
+				var professionID int
+				if len(professionIDs) > 0 {
+					professionID = professionIDs[0]
+				}
+
 				// Gerar array de todas as datas no intervalo
 				dateRange := GenerateDateRange(firstDateOnly, lastDateOnly)
-				result, err := h.eventUseCase.CountEventsByPeriods(dateRange, eventType, advancedFilters)
+				result, err := h.eventUseCase.CountEventsByPeriods(dateRange, eventType, advancedFilters, funnelID, professionID)
 				if err != nil {
 					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 						"error": fmt.Sprintf("Erro ao contar LEADs por períodos: %v", err),
@@ -356,16 +368,30 @@ func (h *EventHandler) GetEvents(c *fiber.Ctx) error {
 				}
 
 				return c.JSON(fiber.Map{
-					"periods":    result,
-					"start_date": firstDateOnly.Format("2006-01-02"),
-					"end_date":   lastDateOnly.Format("2006-01-02"),
-					"all_data":   true,
+					"periods":       result,
+					"start_date":    firstDateOnly.Format("2006-01-02"),
+					"end_date":      lastDateOnly.Format("2006-01-02"),
+					"all_data":      true,
+					"funnel_id":     funnelID,
+					"profession_id": professionID,
 				})
 			} else if period && (!fromTime.IsZero() && !toTime.IsZero()) {
 				fmt.Println("Buscando LEADs por período específico")
+				// Pegar o funnel_id, se existir
+				var funnelID int
+				if len(funnelIDs) > 0 {
+					funnelID = funnelIDs[0]
+				}
+
+				// Pegar o profession_id, se existir
+				var professionID int
+				if len(professionIDs) > 0 {
+					professionID = professionIDs[0]
+				}
+
 				// Gerar array de datas no intervalo from-to
 				dateRange := GenerateDateRange(fromTime, toTime)
-				result, err := h.eventUseCase.CountEventsByPeriods(dateRange, eventType, advancedFilters)
+				result, err := h.eventUseCase.CountEventsByPeriods(dateRange, eventType, advancedFilters, funnelID, professionID)
 				if err != nil {
 					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 						"error": fmt.Sprintf("Erro ao contar LEADs por períodos: %v", err),
@@ -373,14 +399,28 @@ func (h *EventHandler) GetEvents(c *fiber.Ctx) error {
 				}
 
 				return c.JSON(fiber.Map{
-					"periods": result,
-					"from":    fromTime.Format(time.RFC3339),
-					"to":      toTime.Format(time.RFC3339),
+					"periods":       result,
+					"from":          fromTime.Format(time.RFC3339),
+					"to":            toTime.Format(time.RFC3339),
+					"funnel_id":     funnelID,
+					"profession_id": professionID,
 				})
 			} else if periodsParam != "" {
 				fmt.Println("Buscando LEADs por períodos específicos")
+				// Pegar o funnel_id, se existir
+				var funnelID int
+				if len(funnelIDs) > 0 {
+					funnelID = funnelIDs[0]
+				}
+
+				// Pegar o profession_id, se existir
+				var professionID int
+				if len(professionIDs) > 0 {
+					professionID = professionIDs[0]
+				}
+
 				periods := strings.Split(periodsParam, ",")
-				result, err := h.eventUseCase.CountEventsByPeriods(periods, eventType, advancedFilters)
+				result, err := h.eventUseCase.CountEventsByPeriods(periods, eventType, advancedFilters, funnelID, professionID)
 				if err != nil {
 					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 						"error": fmt.Sprintf("Erro ao contar LEADs por períodos: %v", err),
@@ -388,7 +428,9 @@ func (h *EventHandler) GetEvents(c *fiber.Ctx) error {
 				}
 
 				return c.JSON(fiber.Map{
-					"periods": result,
+					"periods":       result,
+					"funnel_id":     funnelID,
+					"profession_id": professionID,
 				})
 			}
 

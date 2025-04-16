@@ -26,6 +26,18 @@ func NewSessionHandler(sessionUseCase *usecases.SessionUseCase) *SessionHandler 
 
 // GetSessions retorna todas as sessões com paginação, ordenação e filtros
 func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
+	countOnly := c.Query("count_only") == "true"
+
+	// Obter todos os parâmetros uma única vez para evitar inconsistências
+	landingPage := c.Query("landingPage", "")
+	if landingPage == "" {
+		landingPage = c.Query("landing_page", "")
+	}
+
+	// Extract funnel ID and profession ID
+	funnelID := c.Query("funnel_id", "")
+	professionID := c.Query("profession_id", "")
+
 	// Obter localização de Brasília
 	brazilLocation := GetBrasilLocation()
 
@@ -40,54 +52,53 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid 'limit' parameter"})
 	}
 
-	// Verificar se é para retornar apenas a contagem
-	countOnly := c.Query("count_only", "false") == "true"
-
 	// Parse de ordenação
 	sortBy := c.Query("sortBy", "sessionStart")
 	sortDirection := c.Query("sortDirection", "desc")
 	orderBy := fmt.Sprintf("%s %s", sortBy, sortDirection)
 
-	// Parse de filtros de data
-	from := time.Time{}
-	to := time.Now().In(brazilLocation)
+	// Parse period and periods parameters
+	periodEnabled := c.Query("period", "false") == "true"
+	periodsParam := c.Query("periods", "")
+
+	// Parse de filtros de data (MOVIDO PARA ANTES DO BLOCO IF periodEnabled)
+	fromTime := time.Time{}
+	toTime := time.Now().In(brazilLocation)
 
 	// Parse from e to das query params
 	fromStr := c.Query("from", "")
 	toStr := c.Query("to", "")
 
 	if fromStr != "" {
-		fromTime, err := time.Parse(time.RFC3339, fromStr)
+		parsedTime, err := time.Parse(time.RFC3339, fromStr)
 		if err != nil {
 			// Tentar formato alternativo YYYY-MM-DD
-			fromTime, err = time.Parse("2006-01-02", fromStr)
+			parsedTime, err = time.Parse("2006-01-02", fromStr)
 			if err != nil {
 				return c.Status(400).JSON(fiber.Map{"error": "Invalid 'from' date format. Use ISO format (e.g., 2023-01-01T00:00:00Z) or YYYY-MM-DD"})
 			}
 			// Definir para início do dia no horário de Brasília
-			fromTime = time.Date(fromTime.Year(), fromTime.Month(), fromTime.Day(), 0, 0, 0, 0, brazilLocation)
+			fromTime = time.Date(parsedTime.Year(), parsedTime.Month(), parsedTime.Day(), 0, 0, 0, 0, brazilLocation)
 		} else {
 			// Converter para horário de Brasília
-			fromTime = fromTime.In(brazilLocation)
+			fromTime = parsedTime.In(brazilLocation)
 		}
-		from = fromTime
 	}
 
 	if toStr != "" {
-		toTime, err := time.Parse(time.RFC3339, toStr)
+		parsedTime, err := time.Parse(time.RFC3339, toStr)
 		if err != nil {
 			// Tentar formato alternativo YYYY-MM-DD
-			toTime, err = time.Parse("2006-01-02", toStr)
+			parsedTime, err = time.Parse("2006-01-02", toStr)
 			if err != nil {
 				return c.Status(400).JSON(fiber.Map{"error": "Invalid 'to' date format. Use ISO format (e.g., 2023-01-31T23:59:59Z) or YYYY-MM-DD"})
 			}
 			// Definir para fim do dia no horário de Brasília
-			toTime = time.Date(toTime.Year(), toTime.Month(), toTime.Day(), 23, 59, 59, 999999999, brazilLocation)
+			toTime = time.Date(parsedTime.Year(), parsedTime.Month(), parsedTime.Day(), 23, 59, 59, 999999999, brazilLocation)
 		} else {
 			// Converter para horário de Brasília
-			toTime = toTime.In(brazilLocation)
+			toTime = parsedTime.In(brazilLocation)
 		}
-		to = toTime
 	}
 
 	// Suporte a startDate/endDate alternativo para from/to
@@ -98,8 +109,7 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 		startDate, err := time.Parse("2006-01-02", startDateStr)
 		if err == nil {
 			// Definir para início do dia no horário de Brasília
-			from = time.Date(startDate.Year(), startDate.Month(), startDate.Day(), 0, 0, 0, 0, brazilLocation)
-			fromStr = startDateStr + "T00:00:00-03:00" // Horário de Brasília
+			fromTime = time.Date(startDate.Year(), startDate.Month(), startDate.Day(), 0, 0, 0, 0, brazilLocation)
 		}
 	}
 
@@ -107,9 +117,49 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 		endDate, err := time.Parse("2006-01-02", endDateStr)
 		if err == nil {
 			// Definir para fim do dia no horário de Brasília
-			to = time.Date(endDate.Year(), endDate.Month(), endDate.Day(), 23, 59, 59, 999999999, brazilLocation)
-			toStr = endDateStr + "T23:59:59-03:00" // Horário de Brasília
+			toTime = time.Date(endDate.Year(), endDate.Month(), endDate.Day(), 23, 59, 59, 999999999, brazilLocation)
 		}
+	}
+
+	// Verificar se há filtro de período
+	hasDateFilter := !fromTime.IsZero() && !toTime.IsZero()
+
+	// Se period estiver habilitado, contar as sessões por períodos
+	if periodEnabled {
+		var periods []string
+		var results map[string]int64
+		var err error
+
+		// Verificar se temos períodos específicos ou se devemos usar intervalo de datas
+		if periodsParam != "" {
+			// Usar split por vírgula para períodos específicos
+			periods = strings.Split(periodsParam, ",")
+		} else if hasDateFilter {
+			// Gerar períodos a partir do intervalo de datas from-to
+			periods = GenerateDateRange(fromTime, toTime)
+		} else {
+			// Sem períodos e sem datas, usar data atual
+			today := time.Now().In(brazilLocation)
+			todayStr := today.Format("2006-01-02")
+			periods = []string{todayStr}
+		}
+
+		// Executar a consulta com os períodos determinados
+		results, err = h.sessionUseCase.CountSessionsByPeriods(periods, landingPage, funnelID, professionID)
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{
+				"error": "Failed to count sessions by periods",
+			})
+		}
+
+		return c.JSON(fiber.Map{
+			"periods":       results,
+			"landingPage":   landingPage,
+			"funnel_id":     funnelID,
+			"profession_id": professionID,
+			"from":          fromStr,
+			"to":            toStr,
+		})
 	}
 
 	// Parse de filtros de tempo
@@ -118,10 +168,7 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 
 	// Parse de outros filtros
 	userID := c.Query("user_id", "")
-	professionID := c.Query("profession_id", "")
 	productID := c.Query("product_id", "")
-	funnelID := c.Query("funnel_id", "")
-	landingPage := c.Query("landingPage", "")
 
 	// Parse do parâmetro isActive
 	var isActive *bool
@@ -130,9 +177,6 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 		isActiveVal := isActiveStr == "true"
 		isActive = &isActiveVal
 	}
-
-	// Verificar se há filtro de período
-	hasDateFilter := !from.IsZero() && !to.IsZero()
 
 	// Se count_only for true, apenas obter a contagem
 	if countOnly {
@@ -157,7 +201,8 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 
 			// Gerar array de todas as datas no intervalo
 			dateRange := GenerateDateRange(firstDateOnly, lastDateOnly)
-			result, err := h.sessionUseCase.CountSessionsByPeriods(dateRange, landingPage)
+
+			result, err := h.sessionUseCase.CountSessionsByPeriods(dateRange, landingPage, funnelID, professionID)
 			if err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 					"error": fmt.Sprintf("Error counting sessions by periods: %v", err),
@@ -165,16 +210,19 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 			}
 
 			return c.JSON(fiber.Map{
-				"periods":     result,
-				"start_date":  firstDateOnly.Format("2006-01-02"),
-				"end_date":    lastDateOnly.Format("2006-01-02"),
-				"all_data":    true,
-				"landingPage": landingPage,
+				"periods":       result,
+				"start_date":    firstDateOnly.Format("2006-01-02"),
+				"end_date":      lastDateOnly.Format("2006-01-02"),
+				"all_data":      true,
+				"landingPage":   landingPage,
+				"funnel_id":     funnelID,
+				"profession_id": professionID,
 			})
 		} else if period && hasDateFilter {
 			// Gerar array de datas no intervalo from-to
-			dateRange := GenerateDateRange(from, to)
-			result, err := h.sessionUseCase.CountSessionsByPeriods(dateRange, landingPage)
+			dateRange := GenerateDateRange(fromTime, toTime)
+
+			result, err := h.sessionUseCase.CountSessionsByPeriods(dateRange, landingPage, funnelID, professionID)
 			if err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 					"error": fmt.Sprintf("Error counting sessions by periods: %v", err),
@@ -182,14 +230,16 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 			}
 
 			return c.JSON(fiber.Map{
-				"periods":     result,
-				"from":        fromStr,
-				"to":          toStr,
-				"landingPage": landingPage,
+				"periods":       result,
+				"from":          fromStr,
+				"to":            toStr,
+				"landingPage":   landingPage,
+				"funnel_id":     funnelID,
+				"profession_id": professionID,
 			})
 		} else if periodsParam != "" {
 			periods := strings.Split(periodsParam, ",")
-			result, err := h.sessionUseCase.CountSessionsByPeriods(periods, landingPage)
+			result, err := h.sessionUseCase.CountSessionsByPeriods(periods, landingPage, funnelID, professionID)
 			if err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 					"error": fmt.Sprintf("Error counting sessions by periods: %v", err),
@@ -197,13 +247,15 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 			}
 
 			return c.JSON(fiber.Map{
-				"periods":     result,
-				"landingPage": landingPage,
+				"periods":       result,
+				"landingPage":   landingPage,
+				"funnel_id":     funnelID,
+				"profession_id": professionID,
 			})
 		}
 
 		// Contagem normal
-		count, err := h.sessionUseCase.CountSessions(from, to, timeFrom, timeTo, userID, professionID, productID, funnelID, isActive, landingPage)
+		count, err := h.sessionUseCase.CountSessions(fromTime, toTime, timeFrom, timeTo, userID, professionID, productID, funnelID, isActive, landingPage)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": fmt.Sprintf("Error counting sessions: %v", err),
@@ -212,8 +264,8 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 
 		return c.JSON(fiber.Map{
 			"count":     count,
-			"from":      fromStr,
-			"to":        toStr,
+			"from":      fromTime.Format(time.RFC3339),
+			"to":        toTime.Format(time.RFC3339),
 			"time_from": timeFrom,
 			"time_to":   timeTo,
 		})
@@ -225,8 +277,8 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 		page,
 		limit,
 		orderBy,
-		from,
-		to,
+		fromTime,
+		toTime,
 		timeFrom,
 		timeTo,
 		userID,
@@ -258,8 +310,8 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 		"totalPages":    totalPages,
 		"sortBy":        sortBy,
 		"sortDirection": sortDirection,
-		"from":          fromStr,
-		"to":            toStr,
+		"from":          fromTime.Format(time.RFC3339),
+		"to":            toTime.Format(time.RFC3339),
 		"time_from":     timeFrom,
 		"time_to":       timeTo,
 		"limitApplied":  hasDateFilter, // Indica se o limite foi aplicado (apenas com filtro de data)
@@ -268,9 +320,6 @@ func (h *SessionHandler) GetSessions(c *fiber.Ctx) error {
 
 // GetActiveSessions retorna todas as sessões ativas
 func (h *SessionHandler) GetActiveSessions(c *fiber.Ctx) error {
-	// Obter localização de Brasília
-	brazilLocation := GetBrasilLocation()
-
 	page, err := strconv.Atoi(c.Query("page", "1"))
 	if err != nil || page < 1 {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid 'page' parameter"})
@@ -286,8 +335,11 @@ func (h *SessionHandler) GetActiveSessions(c *fiber.Ctx) error {
 	sortDirection := c.Query("sortDirection", "desc")
 	orderBy := fmt.Sprintf("%s %s", sortBy, sortDirection)
 
-	// Obter parâmetro landingPage
+	// Obter parâmetro landingPage com suporte para ambos os formatos
 	landingPage := c.Query("landingPage", "")
+	if landingPage == "" {
+		landingPage = c.Query("landing_page", "")
+	}
 
 	// Verificar se é para retornar apenas a contagem
 	countOnly := c.Query("count_only", "false") == "true"
@@ -306,10 +358,6 @@ func (h *SessionHandler) GetActiveSessions(c *fiber.Ctx) error {
 			"count": count,
 		})
 	}
-
-	// Use brazilLocation em algum contexto para evitar erro de variável não utilizada
-	now := time.Now().In(brazilLocation)
-	fmt.Printf("Buscando sessões ativas em: %s\n", now.Format(time.RFC3339))
 
 	// Buscar sessões ativas
 	sessions, total, err := h.sessionUseCase.FindActiveSessions(page, limit, orderBy, landingPage)
@@ -340,9 +388,6 @@ func (h *SessionHandler) GetActiveSessions(c *fiber.Ctx) error {
 
 // GetSessionByID retorna uma sessão específica pelo ID
 func (h *SessionHandler) GetSessionByID(c *fiber.Ctx) error {
-	// Obter localização de Brasília
-	brazilLocation := GetBrasilLocation()
-
 	id := c.Params("id")
 
 	// Validar UUID
@@ -350,10 +395,6 @@ func (h *SessionHandler) GetSessionByID(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid session ID format"})
 	}
-
-	// Use brazilLocation em algum contexto para evitar erro de variável não utilizada
-	now := time.Now().In(brazilLocation)
-	fmt.Printf("Buscando sessão %s em: %s\n", id, now.Format(time.RFC3339))
 
 	session, err := h.sessionUseCase.FindSessionByID(context.Background(), id)
 	if err != nil {

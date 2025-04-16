@@ -53,8 +53,17 @@ func (h *ProfessionHandler) GetProfessions(c *fiber.Ctx) error {
 		})
 	}
 
+	// Create simplified response objects with only id and name
+	var simplifiedProfessions []fiber.Map
+	for _, p := range professions {
+		simplifiedProfessions = append(simplifiedProfessions, fiber.Map{
+			"profession_id":   p.ProfessionID,
+			"profession_name": p.ProfessionName,
+		})
+	}
+
 	return c.JSON(fiber.Map{
-		"data": professions,
+		"data": simplifiedProfessions,
 		"meta": fiber.Map{
 			"total":             total,
 			"page":              page,

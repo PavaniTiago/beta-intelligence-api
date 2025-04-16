@@ -24,7 +24,7 @@ type AdvancedFilter struct {
 type EventRepository interface {
 	GetEvents(ctx context.Context, page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string, professionIDs, funnelIDs []int, advancedFilters []AdvancedFilter, filterCondition string) ([]entities.Event, int64, error)
 	CountEvents(from, to time.Time, timeFrom, timeTo string, eventType string, professionIDs, funnelIDs []int, advancedFilters []AdvancedFilter, filterCondition string) (int64, error)
-	CountEventsByPeriods(periods []string, eventType string, advancedFilters []AdvancedFilter) (map[string]int64, error)
+	CountEventsByPeriods(periods []string, eventType string, advancedFilters []AdvancedFilter, funnelID int, professionID int) (map[string]int64, error)
 	GetEventsDateRange(eventType string) (time.Time, time.Time, error)
 }
 
@@ -1185,7 +1185,7 @@ func (r *eventRepository) CountEvents(from, to time.Time, timeFrom, timeTo strin
 }
 
 // CountEventsByPeriods conta eventos agrupados por períodos (dias)
-func (r *eventRepository) CountEventsByPeriods(periods []string, eventType string, advancedFilters []AdvancedFilter) (map[string]int64, error) {
+func (r *eventRepository) CountEventsByPeriods(periods []string, eventType string, advancedFilters []AdvancedFilter, funnelID int, professionID int) (map[string]int64, error) {
 	result := make(map[string]int64)
 
 	// Obter localização de Brasília usando a função centralizada
@@ -1217,6 +1217,16 @@ func (r *eventRepository) CountEventsByPeriods(periods []string, eventType strin
 
 		// Filtrar por data do período
 		query = query.Where("(e.event_time AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?", startOfDay.Format("2006-01-02 15:04:05"), endOfDay.Format("2006-01-02 15:04:05"))
+
+		// Filtrar por funnel_id se fornecido e maior que 0
+		if funnelID > 0 {
+			query = query.Where("e.funnel_id = ?", funnelID)
+		}
+
+		// Filtrar por profession_id se fornecido e maior que 0
+		if professionID > 0 {
+			query = query.Where("e.profession_id = ?", professionID)
+		}
 
 		// Aplicar filtros avançados se existirem
 		if len(advancedFilters) > 0 {

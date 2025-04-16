@@ -17,7 +17,7 @@ type ISessionRepository interface {
 	GetSessions(ctx context.Context, page, limit int, orderBy string, from, to time.Time, timeFrom, timeTo string, userID, professionID, productID, funnelID string, isActive *bool, landingPage string) ([]entities.Session, int64, error)
 	FindSessionByID(ctx context.Context, id string) (*entities.Session, error)
 	CountSessions(from, to time.Time, timeFrom, timeTo string, userID, professionID, productID, funnelID string, isActive *bool, landingPage string) (int64, error)
-	CountSessionsByPeriods(periods []string, landingPage string) (map[string]int64, error)
+	CountSessionsByPeriods(periods []string, landingPage string, funnelID string, professionID string) (map[string]int64, error)
 	FindActiveSessions(page, limit int, orderBy string, landingPage string) ([]entities.Session, int64, error)
 	GetSessionsDateRange() (time.Time, time.Time, error)
 }
@@ -378,9 +378,9 @@ func (r *SessionRepository) CountSessions(from, to time.Time, timeFrom, timeTo s
 	return count, nil
 }
 
-func (r *SessionRepository) CountSessionsByPeriods(periods []string, landingPage string) (map[string]int64, error) {
+func (r *SessionRepository) CountSessionsByPeriods(periods []string, landingPage string, funnelID string, professionID string) (map[string]int64, error) {
 	// Gerar chave de cache baseada nos períodos
-	cacheKey := fmt.Sprintf("count_sessions_periods:%v:%s", periods, landingPage)
+	cacheKey := fmt.Sprintf("count_sessions_periods:%v:%s:%s:%s", periods, landingPage, funnelID, professionID)
 
 	// Tentar obter do cache
 	if cached, found := r.cache.Get(cacheKey); found {
@@ -391,7 +391,7 @@ func (r *SessionRepository) CountSessionsByPeriods(periods []string, landingPage
 
 	for _, period := range periods {
 		// Gerar chave de cache para o período específico
-		periodCacheKey := fmt.Sprintf("count_sessions_period:%s:%s", period, landingPage)
+		periodCacheKey := fmt.Sprintf("count_sessions_period:%s:%s:%s:%s", period, landingPage, funnelID, professionID)
 
 		// Tentar obter do cache do período
 		if cached, found := r.cache.Get(periodCacheKey); found {
@@ -419,6 +419,22 @@ func (r *SessionRepository) CountSessionsByPeriods(periods []string, landingPage
 		// Adicionar filtro de landing page se fornecido
 		if landingPage != "" {
 			query = query.Where("\"landingPage\" = ?", landingPage)
+		}
+
+		// Adicionar filtro de funnel_id se fornecido
+		if funnelID != "" {
+			funID, err := strconv.Atoi(funnelID)
+			if err == nil && funID > 0 {
+				query = query.Where("funnel_id = ?", funID)
+			}
+		}
+
+		// Adicionar filtro de profession_id se fornecido
+		if professionID != "" {
+			profID, err := strconv.Atoi(professionID)
+			if err == nil && profID > 0 {
+				query = query.Where("profession_id = ?", profID)
+			}
 		}
 
 		// Contar sessões no período usando timezone

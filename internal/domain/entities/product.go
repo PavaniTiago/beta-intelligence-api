@@ -7,4 +7,5 @@ type Product struct {
 	CreatedAt    time.Time `json:"created_at" gorm:"column:created_at"`
 	ProductName  string    `json:"product_name" gorm:"column:product_name"`
 	ProfessionID int       `json:"profession_id" gorm:"column:profession_id"`
+	Funnels      []Funnel  `json:"funnels" gorm:"foreignKey:ProductID;references:ProductID"`
 }

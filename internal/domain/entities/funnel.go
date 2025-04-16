@@ -9,5 +9,7 @@ type Funnel struct {
 	CreatedAt  time.Time `json:"created_at" gorm:"column:created_at"`
 	ProductID  int       `json:"product_id" gorm:"column:product_id"`
 	Global     bool      `json:"global" gorm:"column:global"`
+	IsTesting  bool      `json:"is_testing" gorm:"column:is_testing"`
+	IsActive   bool      `json:"is_active" gorm:"column:is_active"`
 	Product    Product   `json:"product" gorm:"foreignKey:ProductID;references:ProductID"`
 }
