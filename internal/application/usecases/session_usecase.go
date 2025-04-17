@@ -38,6 +38,10 @@ func (uc *SessionUseCase) GetSessionsDateRange() (time.Time, time.Time, error) {
 	return uc.sessionRepo.GetSessionsDateRange()
 }
 
-func (uc *SessionUseCase) FindActiveSessions(page, limit int, orderBy string, landingPage string) ([]entities.Session, int64, error) {
-	return uc.sessionRepo.FindActiveSessions(page, limit, orderBy, landingPage)
+func (uc *SessionUseCase) FindActiveSessions(page, limit int, orderBy string, landingPage string, funnelID string, professionID string) ([]entities.Session, int64, error) {
+	return uc.sessionRepo.FindActiveSessions(page, limit, orderBy, landingPage, funnelID, professionID)
+}
+
+func (uc *SessionUseCase) CountActiveSessions(professionID string, funnelID string, landingPage string) (int64, error) {
+	return uc.sessionRepo.CountActiveSessions(professionID, funnelID, landingPage)
 }

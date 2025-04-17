@@ -341,13 +341,16 @@ func (h *SessionHandler) GetActiveSessions(c *fiber.Ctx) error {
 		landingPage = c.Query("landing_page", "")
 	}
 
+	// Obter parâmetros para filtros adicionais
+	funnelID := c.Query("funnel_id", "")
+	professionID := c.Query("profession_id", "")
+
 	// Verificar se é para retornar apenas a contagem
 	countOnly := c.Query("count_only", "false") == "true"
 
 	if countOnly {
-		// Para count_only, usamos o método normal com isActive = true
-		isActiveVal := true
-		count, err := h.sessionUseCase.CountSessions(time.Time{}, time.Time{}, "", "", "", "", "", "", &isActiveVal, landingPage)
+		// Usar método otimizado específico para contagem de sessões ativas
+		count, err := h.sessionUseCase.CountActiveSessions(professionID, funnelID, landingPage)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": fmt.Sprintf("Error counting active sessions: %v", err),
@@ -355,12 +358,15 @@ func (h *SessionHandler) GetActiveSessions(c *fiber.Ctx) error {
 		}
 
 		return c.JSON(fiber.Map{
-			"count": count,
+			"count":         count,
+			"landingPage":   landingPage,
+			"funnel_id":     funnelID,
+			"profession_id": professionID,
 		})
 	}
 
 	// Buscar sessões ativas
-	sessions, total, err := h.sessionUseCase.FindActiveSessions(page, limit, orderBy, landingPage)
+	sessions, total, err := h.sessionUseCase.FindActiveSessions(page, limit, orderBy, landingPage, funnelID, professionID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": fmt.Sprintf("Error retrieving active sessions: %v", err),
@@ -383,6 +389,8 @@ func (h *SessionHandler) GetActiveSessions(c *fiber.Ctx) error {
 		"sortBy":        sortBy,
 		"sortDirection": sortDirection,
 		"landingPage":   landingPage,
+		"funnel_id":     funnelID,
+		"profession_id": professionID,
 	})
 }
 

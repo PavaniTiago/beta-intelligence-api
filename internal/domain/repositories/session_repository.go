@@ -18,8 +18,9 @@ type ISessionRepository interface {
 	FindSessionByID(ctx context.Context, id string) (*entities.Session, error)
 	CountSessions(from, to time.Time, timeFrom, timeTo string, userID, professionID, productID, funnelID string, isActive *bool, landingPage string) (int64, error)
 	CountSessionsByPeriods(periods []string, landingPage string, funnelID string, professionID string) (map[string]int64, error)
-	FindActiveSessions(page, limit int, orderBy string, landingPage string) ([]entities.Session, int64, error)
+	FindActiveSessions(page, limit int, orderBy string, landingPage string, funnelID string, professionID string) ([]entities.Session, int64, error)
 	GetSessionsDateRange() (time.Time, time.Time, error)
+	CountActiveSessions(professionID string, funnelID string, landingPage string) (int64, error)
 }
 
 type SessionRepository struct {
@@ -459,19 +460,54 @@ func (r *SessionRepository) CountSessionsByPeriods(periods []string, landingPage
 	return result, nil
 }
 
-func (r *SessionRepository) FindActiveSessions(page, limit int, orderBy string, landingPage string) ([]entities.Session, int64, error) {
+func (r *SessionRepository) FindActiveSessions(page, limit int, orderBy string, landingPage string, funnelID string, professionID string) ([]entities.Session, int64, error) {
 	var sessions []entities.Session
 	var total int64
 
 	// Calculate offset
 	offset := (page - 1) * limit
 
-	// Base query
-	query := r.db.Model(&entities.Session{}).Where(`"isActive" = ?`, true)
+	// Base query com joins
+	query := r.db.Model(&entities.Session{}).
+		Select(`
+			sessions.*,
+			users.first_name as user_first_name,
+			users.last_name as user_last_name,
+			users.initial_utm_source as user_utm_source,
+			users.initial_utm_medium as user_utm_medium,
+			users.initial_utm_campaign as user_utm_campaign,
+			professions.profession_id as profession_id,
+			professions.profession_name as profession_name,
+			products.product_id as product_id,
+			products.product_name as product_name,
+			funnels.funnel_id as funnel_id,
+			funnels.funnel_name as funnel_name
+		`).
+		Joins("LEFT JOIN users ON sessions.user_id = users.user_id").
+		Joins("LEFT JOIN professions ON sessions.profession_id = professions.profession_id").
+		Joins("LEFT JOIN products ON sessions.product_id = products.product_id").
+		Joins("LEFT JOIN funnels ON sessions.funnel_id = funnels.funnel_id").
+		Where(`sessions."isActive" = ?`, true)
 
 	// Adicionar filtro de landing page se fornecido
 	if landingPage != "" {
-		query = query.Where(`"landingPage" = ?`, landingPage)
+		query = query.Where(`sessions."landingPage" = ?`, landingPage)
+	}
+
+	// Adicionar filtro de funnel_id se fornecido
+	if funnelID != "" {
+		funnelIDInt, err := strconv.Atoi(funnelID)
+		if err == nil {
+			query = query.Where("sessions.funnel_id = ?", funnelIDInt)
+		}
+	}
+
+	// Adicionar filtro de profession_id se fornecido
+	if professionID != "" {
+		profIDInt, err := strconv.Atoi(professionID)
+		if err == nil {
+			query = query.Where("sessions.profession_id = ?", profIDInt)
+		}
 	}
 
 	// Get total count
@@ -481,12 +517,22 @@ func (r *SessionRepository) FindActiveSessions(page, limit int, orderBy string, 
 
 	// Apply ordering
 	if orderBy != "" {
+		// Adicionar prefixo de tabela para evitar ambiguidade
+		if !strings.Contains(orderBy, ".") {
+			// Para colunas comuns em sessions
+			if strings.Contains(orderBy, "sessionStart") ||
+				strings.Contains(orderBy, "lastActivity") ||
+				strings.Contains(orderBy, "isActive") ||
+				strings.Contains(orderBy, "landingPage") {
+				orderBy = "sessions." + orderBy
+			}
+		}
 		query = query.Order(orderBy)
 	} else {
-		query = query.Order("\"sessionStart\" DESC")
+		query = query.Order(`sessions."sessionStart" DESC`)
 	}
 
-	// Get paginated results with preloads
+	// Get paginated results com preloads para garantir o carregamento completo das entidades relacionadas
 	err := query.Offset(offset).
 		Limit(limit).
 		Preload("User").
@@ -497,6 +543,22 @@ func (r *SessionRepository) FindActiveSessions(page, limit int, orderBy string, 
 
 	if err != nil {
 		return nil, 0, err
+	}
+
+	// Garantir que as relações estejam corretamente preenchidas
+	for i := range sessions {
+		// Assegurar que dados UTM estejam preenchidos a partir do usuário
+		if sessions[i].User != nil {
+			if sessions[i].UtmSource == "" && sessions[i].User.InitialUtmSource != "" {
+				sessions[i].UtmSource = sessions[i].User.InitialUtmSource
+			}
+			if sessions[i].UtmMedium == "" && sessions[i].User.InitialUtmMedium != "" {
+				sessions[i].UtmMedium = sessions[i].User.InitialUtmMedium
+			}
+			if sessions[i].UtmCampaign == "" && sessions[i].User.InitialUtmCampaign != "" {
+				sessions[i].UtmCampaign = sessions[i].User.InitialUtmCampaign
+			}
+		}
 	}
 
 	return sessions, total, nil
@@ -564,4 +626,40 @@ func (r *SessionRepository) GetSessionsDateRange() (time.Time, time.Time, error)
 
 	fmt.Printf("Intervalo de datas para sessões: de %v até %v\n", minDate, maxDate)
 	return minDate, maxDate, nil
+}
+
+func (r *SessionRepository) CountActiveSessions(professionID string, funnelID string, landingPage string) (int64, error) {
+	var count int64
+
+	// Query base simplificada
+	query := r.db.Model(&entities.Session{}).Where(`"isActive" = ?`, true)
+
+	// Filtros adicionais
+	if landingPage != "" {
+		query = query.Where(`"landingPage" = ?`, landingPage)
+	}
+
+	// Filtro de profession_id
+	if professionID != "" {
+		profIDInt, err := strconv.Atoi(professionID)
+		if err == nil {
+			query = query.Where("profession_id = ?", profIDInt)
+		}
+	}
+
+	// Filtro de funnel_id
+	if funnelID != "" {
+		funnelIDInt, err := strconv.Atoi(funnelID)
+		if err == nil {
+			query = query.Where("funnel_id = ?", funnelIDInt)
+		}
+	}
+
+	// Executar a contagem
+	err := query.Count(&count).Error
+	if err != nil {
+		return 0, err
+	}
+
+	return count, nil
 }
