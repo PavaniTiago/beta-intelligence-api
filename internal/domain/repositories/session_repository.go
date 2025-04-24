@@ -21,6 +21,9 @@ type ISessionRepository interface {
 	FindActiveSessions(page, limit int, orderBy string, landingPage string, funnelID string, professionID string) ([]entities.Session, int64, error)
 	GetSessionsDateRange() (time.Time, time.Time, error)
 	CountActiveSessions(professionID string, funnelID string, landingPage string) (int64, error)
+	CountSessionsByDateRange(from, to time.Time, timeFrom, timeTo, userID, professionID, productID, funnelID string, landingPage string) (int64, error)
+	GetSessionsCountByDays(from, to time.Time, timeFrom, timeTo, userID, professionID, productID, funnelID string, landingPage string) (map[string]int64, error)
+	GetSessionsCountByHours(date time.Time, userID, professionID, productID, funnelID string, landingPage string) (map[string]int64, error)
 }
 
 type SessionRepository struct {
@@ -662,4 +665,255 @@ func (r *SessionRepository) CountActiveSessions(professionID string, funnelID st
 	}
 
 	return count, nil
+}
+
+func (r *SessionRepository) CountSessionsByDateRange(from, to time.Time, timeFrom, timeTo, userID, professionID, productID, funnelID string, landingPage string) (int64, error) {
+	var count int64
+
+	// Formatar as datas para o formato do PostgreSQL
+	var fromStr, toStr string
+
+	// Obter os horários a serem usados
+	fromHour := "00:00:00"
+	if timeFrom != "" {
+		fromHour = timeFrom + ":00"
+	}
+
+	toHour := "23:59:59"
+	if timeTo != "" {
+		toHour = timeTo + ":59"
+	}
+
+	// Aplicar os horários à data
+	fromStr = fmt.Sprintf("%s %s", from.Format("2006-01-02"), fromHour)
+	toStr = fmt.Sprintf("%s %s", to.Format("2006-01-02"), toHour)
+
+	// Criar query base
+	query := r.db.Model(&entities.Session{})
+
+	// Aplicar filtro de data com timezone São Paulo
+	if !from.IsZero() && !to.IsZero() {
+		// Usar log para debug
+		fmt.Printf("Consulta de sessões com intervalo: %s até %s\n", fromStr, toStr)
+
+		query = query.Where("(\"sessionStart\" AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?",
+			fromStr, toStr)
+	}
+
+	// Aplicar outros filtros, se fornecidos
+	if userID != "" {
+		query = query.Where("user_id = ?", userID)
+	}
+
+	// Aplicar filtro por profissão
+	if professionID != "" {
+		query = query.Where("profession_id = ?", professionID)
+	}
+
+	// Aplicar filtro por produto
+	if productID != "" {
+		query = query.Where("product_id = ?", productID)
+	}
+
+	// Aplicar filtro por funil
+	if funnelID != "" {
+		query = query.Where("funnel_id = ?", funnelID)
+	}
+
+	// Aplicar filtro por landing page
+	if landingPage != "" {
+		query = query.Where("\"landingPage\" = ?", landingPage)
+	}
+
+	// Executar consulta de contagem diretamente
+	err := query.Count(&count).Error
+
+	// Log para debug
+	fmt.Printf("Contagem de sessões para %s - %s: %d\n", fromStr, toStr, count)
+
+	return count, err
+}
+
+func (r *SessionRepository) GetSessionsCountByDays(from, to time.Time, timeFrom, timeTo, userID, professionID, productID, funnelID string, landingPage string) (map[string]int64, error) {
+	result := make(map[string]int64)
+
+	// Formatar as datas para o formato do PostgreSQL
+	var fromStr, toStr string
+
+	// Obter os horários a serem usados
+	fromHour := "00:00:00"
+	if timeFrom != "" {
+		fromHour = timeFrom + ":00"
+	}
+
+	toHour := "23:59:59"
+	if timeTo != "" {
+		toHour = timeTo + ":59"
+	}
+
+	// Aplicar os horários às datas
+	fromStr = fmt.Sprintf("%s %s", from.Format("2006-01-02"), fromHour)
+	toStr = fmt.Sprintf("%s %s", to.Format("2006-01-02"), toHour)
+
+	// Definir a string de formato de data para a consulta SQL
+	// Para PostgreSQL, usamos to_char com timezone São Paulo
+	dateFormat := "to_char((\"sessionStart\" AT TIME ZONE 'America/Sao_Paulo'), 'YYYY-MM-DD')"
+
+	// Criar estrutura temporária para receber os resultados
+	type DailyCount struct {
+		Date  string
+		Count int64
+	}
+	var counts []DailyCount
+
+	// Criar query base
+	query := r.db.Model(&entities.Session{}).
+		Select(dateFormat + " as date, count(*) as count").
+		Group("date").
+		Order("date")
+
+	// Aplicar filtro de data com timezone São Paulo
+	if !from.IsZero() && !to.IsZero() {
+		// Usar log para debug
+		fmt.Printf("Consulta de sessões por dia com intervalo: %s até %s\n", fromStr, toStr)
+
+		query = query.Where("(\"sessionStart\" AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?",
+			fromStr, toStr)
+	}
+
+	// Aplicar outros filtros, se fornecidos
+	if userID != "" {
+		query = query.Where("user_id = ?", userID)
+	}
+
+	// Aplicar filtro por profissão
+	if professionID != "" {
+		query = query.Where("profession_id = ?", professionID)
+	}
+
+	// Aplicar filtro por produto
+	if productID != "" {
+		query = query.Where("product_id = ?", productID)
+	}
+
+	// Aplicar filtro por funil
+	if funnelID != "" {
+		query = query.Where("funnel_id = ?", funnelID)
+	}
+
+	// Aplicar filtro por landing page
+	if landingPage != "" {
+		query = query.Where("\"landingPage\" = ?", landingPage)
+	}
+
+	// Obter SQL para debug
+	stmt := query.Statement
+	sql := stmt.SQL.String()
+	vars := stmt.Vars
+	fmt.Printf("SQL para GetSessionsCountByDays: %s, Vars: %v\n", sql, vars)
+
+	// Executar a consulta
+	err := query.Find(&counts).Error
+	if err != nil {
+		return result, err
+	}
+
+	// Converter o resultado para o formato de mapa
+	for _, c := range counts {
+		result[c.Date] = c.Count
+	}
+
+	// Se não houver resultados para determinado dia no período, adicionar zeros
+	currentDate := from
+	for !currentDate.After(to) {
+		dateStr := currentDate.Format("2006-01-02")
+		if _, exists := result[dateStr]; !exists {
+			result[dateStr] = 0
+		}
+		currentDate = currentDate.AddDate(0, 0, 1)
+	}
+
+	return result, nil
+}
+
+// GetSessionsCountByHours retorna a contagem de sessões por hora para um dia específico
+func (r *SessionRepository) GetSessionsCountByHours(date time.Time, userID, professionID, productID, funnelID string, landingPage string) (map[string]int64, error) {
+	result := make(map[string]int64)
+
+	// Garantir que estamos trabalhando com a data sem componente de hora
+	day := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
+
+	// Definir início e fim do dia
+	startOfDay := fmt.Sprintf("%s 00:00:00", day.Format("2006-01-02"))
+	endOfDay := fmt.Sprintf("%s 23:59:59", day.Format("2006-01-02"))
+
+	// Definir a string de formato de hora para a consulta SQL
+	// Para PostgreSQL, usamos to_char com timezone São Paulo para extrair a hora
+	hourFormat := "to_char((\"sessionStart\" AT TIME ZONE 'America/Sao_Paulo'), 'HH24')"
+
+	// Criar estrutura temporária para receber os resultados
+	type HourlyCount struct {
+		Hour  string
+		Count int64
+	}
+	var counts []HourlyCount
+
+	// Criar query base
+	query := r.db.Model(&entities.Session{}).
+		Select(hourFormat+" as hour, count(*) as count").
+		Where("(\"sessionStart\" AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?", startOfDay, endOfDay).
+		Group("hour").
+		Order("hour")
+
+	// Aplicar outros filtros, se fornecidos
+	if userID != "" {
+		query = query.Where("user_id = ?", userID)
+	}
+
+	// Aplicar filtro por profissão
+	if professionID != "" {
+		query = query.Where("profession_id = ?", professionID)
+	}
+
+	// Aplicar filtro por produto
+	if productID != "" {
+		query = query.Where("product_id = ?", productID)
+	}
+
+	// Aplicar filtro por funil
+	if funnelID != "" {
+		query = query.Where("funnel_id = ?", funnelID)
+	}
+
+	// Aplicar filtro por landing page
+	if landingPage != "" {
+		query = query.Where("\"landingPage\" = ?", landingPage)
+	}
+
+	// Obter SQL para debug
+	stmt := query.Statement
+	sql := stmt.SQL.String()
+	vars := stmt.Vars
+	fmt.Printf("SQL para GetSessionsCountByHours: %s, Vars: %v\n", sql, vars)
+
+	// Executar a consulta
+	err := query.Find(&counts).Error
+	if err != nil {
+		return result, err
+	}
+
+	// Converter o resultado para o formato de mapa
+	for _, c := range counts {
+		result[c.Hour] = c.Count
+	}
+
+	// Preencher horas que não retornaram dados com zero
+	for hour := 0; hour < 24; hour++ {
+		hourStr := fmt.Sprintf("%02d", hour)
+		if _, exists := result[hourStr]; !exists {
+			result[hourStr] = 0
+		}
+	}
+
+	return result, nil
 }

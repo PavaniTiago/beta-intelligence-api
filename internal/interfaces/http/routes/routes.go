@@ -49,6 +49,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 	funnelUseCase := usecases.NewFunnelUseCase(funnelRepo)
 	sessionUseCase := usecases.NewSessionUseCase(sessionRepo)
 	productUseCase := usecases.NewProductUseCase(productRepo)
+	dashboardUseCase := usecases.NewDashboardUseCase(sessionRepo, eventRepo, db)
 
 	// Handlers
 	userHandler := handlers.NewUserHandler(userUseCase, userRepo)
@@ -57,6 +58,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 	funnelHandler := handlers.NewFunnelHandler(funnelUseCase)
 	sessionHandler := handlers.NewSessionHandler(sessionUseCase)
 	productHandler := handlers.NewProductHandler(productUseCase)
+	dashboardHandler := handlers.NewDashboardHandler(dashboardUseCase)
 
 	// Create handlers struct
 	handlersStruct := handlers.NewHandlers(nil, db)
@@ -93,6 +95,9 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 	groups.Session.Get("/", sessionHandler.GetSessions)
 	groups.Session.Get("/active", sessionHandler.GetActiveSessions)
 	groups.Session.Get("/:id", sessionHandler.GetSessionByID)
+
+	// Dashboard routes
+	groups.Public.Get("/dashboard/unified", dashboardHandler.GetUnifiedDashboard)
 
 	// Rotas de Performance
 	setupPerformanceRoutes(groups.Public, handlersStruct.Performance)

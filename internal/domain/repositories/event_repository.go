@@ -26,6 +26,8 @@ type EventRepository interface {
 	CountEvents(from, to time.Time, timeFrom, timeTo string, eventType string, professionIDs, funnelIDs []int, advancedFilters []AdvancedFilter, filterCondition string) (int64, error)
 	CountEventsByPeriods(periods []string, eventType string, advancedFilters []AdvancedFilter, funnelID int, professionID int) (map[string]int64, error)
 	GetEventsDateRange(eventType string) (time.Time, time.Time, error)
+	CountEventsByDateRange(from, to time.Time, timeFrom, timeTo string, eventType string, professionIDs, funnelIDs []int, logicalOperator string) (int64, error)
+	GetEventsByHours(date time.Time, eventType, userID, professionID, productID, funnelID string, landingPage string) (map[string]int64, error)
 }
 
 type eventRepository struct {
@@ -1291,4 +1293,184 @@ func (r *eventRepository) GetEventsDateRange(eventType string) (time.Time, time.
 	maxDate = maxEvent.EventTime
 
 	return minDate, maxDate, nil
+}
+
+// CountEventsByDateRange conta eventos em um intervalo de datas (otimizado para dashboard)
+func (r *eventRepository) CountEventsByDateRange(
+	from, to time.Time,
+	timeFrom, timeTo string,
+	eventType string,
+	professionIDs, funnelIDs []int,
+	logicalOperator string,
+) (int64, error) {
+	var count int64
+
+	// Ajustar datas para incluir o dia inteiro quando é o mesmo dia
+	isSameDay := from.Year() == to.Year() && from.Month() == to.Month() && from.Day() == to.Day()
+
+	// Formatar as datas para o formato do PostgreSQL
+	var fromStr, toStr string
+
+	if isSameDay {
+		// Para o mesmo dia, garantir que o intervalo seja do início ao fim do dia
+		fromStr = fmt.Sprintf("%s 00:00:00", from.Format("2006-01-02"))
+		toStr = fmt.Sprintf("%s 23:59:59", to.Format("2006-01-02"))
+	} else {
+		// Diferentes dias, usar as horas especificadas
+		// Se timeFrom e timeTo forem fornecidos, usá-los
+		fromHour := "00:00:00"
+		if timeFrom != "" {
+			fromHour = timeFrom + ":00"
+		}
+
+		toHour := "23:59:59"
+		if timeTo != "" {
+			toHour = timeTo + ":59"
+		}
+
+		fromStr = fmt.Sprintf("%s %s", from.Format("2006-01-02"), fromHour)
+		toStr = fmt.Sprintf("%s %s", to.Format("2006-01-02"), toHour)
+	}
+
+	// Criar query base
+	query := r.db.Model(&entities.Event{})
+
+	// Aplicar filtro de tipo de evento
+	if eventType != "" {
+		query = query.Where("event_type = ?", eventType)
+	}
+
+	// Aplicar filtro de data com timezone São Paulo
+	if !from.IsZero() && !to.IsZero() {
+		// Usar log para debug
+		fmt.Printf("Consulta de eventos com intervalo: %s até %s, tipo: %s\n", fromStr, toStr, eventType)
+
+		query = query.Where("(\"event_time\" AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?",
+			fromStr, toStr)
+	}
+
+	// Aplicar os filtros de profissão e funil
+	if len(professionIDs) > 0 || len(funnelIDs) > 0 {
+		// Se ambos os filtros estiverem presentes, aplicar o operador lógico (AND/OR)
+		if len(professionIDs) > 0 && len(funnelIDs) > 0 {
+			if logicalOperator == "OR" {
+				// OR: pelo menos um dos filtros deve corresponder
+				query = query.Where("profession_id IN ? OR funnel_id IN ?", professionIDs, funnelIDs)
+			} else {
+				// AND: ambos os filtros devem corresponder (padrão)
+				query = query.Where("profession_id IN ? AND funnel_id IN ?", professionIDs, funnelIDs)
+			}
+		} else if len(professionIDs) > 0 {
+			// Somente filtro de profissão
+			query = query.Where("profession_id IN ?", professionIDs)
+		} else {
+			// Somente filtro de funil
+			query = query.Where("funnel_id IN ?", funnelIDs)
+		}
+	}
+
+	// Obter SQL para debug
+	stmt := query.Statement
+	sql := stmt.SQL.String()
+	vars := stmt.Vars
+	fmt.Printf("SQL para CountEventsByDateRange: %s, Vars: %v\n", sql, vars)
+
+	// Executar consulta de contagem diretamente
+	err := query.Count(&count).Error
+
+	// Log para debug
+	fmt.Printf("Contagem de eventos para %s - %s, tipo %s: %d\n", fromStr, toStr, eventType, count)
+
+	return count, err
+}
+
+// GetEventsByHours retorna a contagem de eventos por hora para um dia específico
+func (r *eventRepository) GetEventsByHours(date time.Time, eventType, userID, professionID, productID, funnelID string, landingPage string) (map[string]int64, error) {
+	result := make(map[string]int64)
+
+	// Garantir que estamos trabalhando com a data sem componente de hora
+	day := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
+
+	// Definir início e fim do dia
+	startOfDay := fmt.Sprintf("%s 00:00:00", day.Format("2006-01-02"))
+	endOfDay := fmt.Sprintf("%s 23:59:59", day.Format("2006-01-02"))
+
+	// Definir a string de formato de hora para a consulta SQL
+	// Para PostgreSQL, usamos to_char com timezone São Paulo para extrair a hora
+	hourFormat := "to_char((\"event_time\" AT TIME ZONE 'America/Sao_Paulo'), 'HH24')"
+
+	// Criar estrutura temporária para receber os resultados
+	type HourlyCount struct {
+		Hour  string
+		Count int64
+	}
+	var counts []HourlyCount
+
+	// Criar query base
+	query := r.db.Model(&entities.Event{}).
+		Select(hourFormat + " as hour, count(*) as count")
+
+	// Filtrar por tipo de evento se fornecido
+	if eventType != "" {
+		query = query.Where("event_type = ?", eventType)
+	}
+
+	// Filtrar pelo intervalo de data
+	query = query.Where("(\"event_time\" AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?",
+		startOfDay, endOfDay)
+
+	// Aplicar outros filtros, se fornecidos
+	if userID != "" {
+		query = query.Where("user_id = ?", userID)
+	}
+
+	// Aplicar filtro por profissão
+	if professionID != "" {
+		query = query.Where("profession_id = ?", professionID)
+	}
+
+	// Aplicar filtro por produto
+	if productID != "" {
+		query = query.Where("product_id = ?", productID)
+	}
+
+	// Aplicar filtro por funil
+	if funnelID != "" {
+		query = query.Where("funnel_id = ?", funnelID)
+	}
+
+	// Aplicar filtro por landing page
+	if landingPage != "" {
+		query = query.Where("\"landingPage\" = ?", landingPage)
+	}
+
+	// Agrupar e ordenar por hora
+	query = query.Group("hour").Order("hour")
+
+	// Obter SQL para debug
+	stmt := query.Statement
+	sql := stmt.SQL.String()
+	vars := stmt.Vars
+	fmt.Printf("SQL para GetEventsByHours: %s, Vars: %v\n", sql, vars)
+
+	// Executar a consulta
+	err := query.Find(&counts).Error
+	if err != nil {
+		return result, err
+	}
+
+	// Converter o resultado para o formato de mapa
+	for _, c := range counts {
+		result[c.Hour] = c.Count
+	}
+
+	// Preencher horas que não retornaram dados com zero
+	for hour := 0; hour < 24; hour++ {
+		hourStr := fmt.Sprintf("%02d", hour)
+		if _, exists := result[hourStr]; !exists {
+			result[hourStr] = 0
+		}
+	}
+
+	return result, nil
 }
