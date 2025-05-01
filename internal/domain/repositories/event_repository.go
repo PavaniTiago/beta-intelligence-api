@@ -199,18 +199,15 @@ func (r *eventRepository) GetEvents(ctx context.Context, page, limit int, orderB
 			toTime = time.Date(to.Year(), to.Month(), to.Day(), 23, 59, 59, 999999999, to.Location())
 		}
 
-		// Converter para UTC antes de aplicar à consulta
-		fromTimeUTC := fromTime.UTC()
-		toTimeUTC := toTime.UTC()
+		// Aplicar filtro usando AT TIME ZONE em São Paulo
+		fromStr := fromTime.Format("2006-01-02 15:04:05")
+		toStr := toTime.Format("2006-01-02 15:04:05")
 
-		// Aplicar filtro em UTC diretamente, permitindo uso de índices
-		baseQuery = baseQuery.Where("e.event_time BETWEEN ? AND ?",
-			fromTimeUTC.Format("2006-01-02 15:04:05"),
-			toTimeUTC.Format("2006-01-02 15:04:05"))
+		baseQuery = baseQuery.Where("(e.event_time AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?",
+			fromStr, toStr)
 
-		fmt.Printf("Events: Filtro de data aplicado em UTC: %s até %s\n",
-			fromTimeUTC.Format("2006-01-02 15:04:05"),
-			toTimeUTC.Format("2006-01-02 15:04:05"))
+		fmt.Printf("Events: Filtro de data aplicado com timezone São Paulo: %s até %s\n",
+			fromStr, toStr)
 	}
 
 	// Adicionar filtro de profissão se fornecido
@@ -1397,11 +1394,11 @@ func (r *eventRepository) CountEvents(from, to time.Time, timeFrom, timeTo strin
 		fromStr := fromTime.Format("2006-01-02 15:04:05")
 		toStr := toTime.Format("2006-01-02 15:04:05")
 
-		// Aplicar filtro usando apenas timezone 'America/Sao_Paulo' sem converter de UTC primeiro
+		// Aplicar filtro usando apenas timezone 'America/Sao_Paulo'
 		query = query.Where("(e.event_time AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?",
 			fromStr, toStr)
 
-		fmt.Printf("CountEvents: Filtro de data aplicado com timezone: %s até %s\n", fromStr, toStr)
+		fmt.Printf("CountEvents: Filtro de data aplicado com timezone São Paulo: %s até %s\n", fromStr, toStr)
 	}
 
 	// Adicionar filtro de profissão se fornecido
@@ -1454,9 +1451,8 @@ func (r *eventRepository) CountEventsByPeriods(periods []string, eventType strin
 			continue
 		}
 
-		// Configurar início e fim do dia no horário de Brasília
+		// Configurar início do dia no horário de Brasília
 		startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, brazilLocation)
-		endOfDay := time.Date(date.Year(), date.Month(), date.Day(), 23, 59, 59, 999999999, brazilLocation)
 
 		// Inicializar consulta para contagem de eventos no período
 		query := r.db.Model(&entities.Event{}).Table("events e")
@@ -1471,7 +1467,9 @@ func (r *eventRepository) CountEventsByPeriods(periods []string, eventType strin
 		}
 
 		// Filtrar por data do período
-		query = query.Where("(e.event_time AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?", startOfDay.Format("2006-01-02 15:04:05"), endOfDay.Format("2006-01-02 15:04:05"))
+		// Usar DATE_TRUNC para garantir que estamos trabalhando com o dia completo
+		query = query.Where("DATE_TRUNC('day', e.event_time AT TIME ZONE 'America/Sao_Paulo') = DATE_TRUNC('day', ? AT TIME ZONE 'America/Sao_Paulo')",
+			startOfDay.Format("2006-01-02"))
 
 		// Filtrar por funnel_id se fornecido e maior que 0
 		if funnelID > 0 {
@@ -1518,7 +1516,7 @@ func (r *eventRepository) GetEventsDateRange(eventType string) (time.Time, time.
 	}
 
 	err := minQuery.
-		Select("MIN(e.event_time AT TIME ZONE 'America/Sao_Paulo') as min_date").
+		Select("MIN(DATE_TRUNC('day', e.event_time AT TIME ZONE 'America/Sao_Paulo')) as min_date").
 		Scan(&minResult).Error
 
 	if err != nil {
@@ -1545,7 +1543,7 @@ func (r *eventRepository) GetEventsDateRange(eventType string) (time.Time, time.
 	}
 
 	err = maxQuery.
-		Select("MAX(e.event_time AT TIME ZONE 'America/Sao_Paulo') as max_date").
+		Select("MAX(DATE_TRUNC('day', e.event_time AT TIME ZONE 'America/Sao_Paulo')) as max_date").
 		Scan(&maxResult).Error
 
 	if err != nil {
@@ -1602,13 +1600,20 @@ func (r *eventRepository) CountEventsByDateRange(
 		query = query.Where("event_type = ?", eventType)
 	}
 
-	// Aplicar filtro de data com timezone São Paulo
+	// Aplicar filtro de data com timezone São Paulo e DATE_TRUNC
 	if !from.IsZero() && !to.IsZero() {
 		// Usar log para debug
 		fmt.Printf("Consulta de eventos com intervalo: %s até %s, tipo: %s\n", fromStr, toStr, eventType)
 
-		query = query.Where("(\"event_time\" AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?",
-			fromStr, toStr)
+		if isSameDay {
+			// Se for o mesmo dia, usar DATE_TRUNC diretamente
+			query = query.Where("DATE_TRUNC('day', \"event_time\" AT TIME ZONE 'America/Sao_Paulo') = DATE_TRUNC('day', ? AT TIME ZONE 'America/Sao_Paulo')",
+				fromStr)
+		} else {
+			// Para intervalo de datas, usar BETWEEN com timezone
+			query = query.Where("(\"event_time\" AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?",
+				fromStr, toStr)
+		}
 	}
 
 	// Aplicar os filtros de profissão e funil
@@ -1653,13 +1658,12 @@ func (r *eventRepository) GetEventsByHours(date time.Time, eventType, userID, pr
 	// Garantir que estamos trabalhando com a data sem componente de hora
 	day := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
 
-	// Definir início e fim do dia
+	// Definir início do dia
 	startOfDay := fmt.Sprintf("%s 00:00:00", day.Format("2006-01-02"))
-	endOfDay := fmt.Sprintf("%s 23:59:59", day.Format("2006-01-02"))
 
 	// Definir a string de formato de hora para a consulta SQL
-	// Para PostgreSQL, usamos to_char com timezone São Paulo para extrair a hora
-	hourFormat := "to_char((\"event_time\" AT TIME ZONE 'America/Sao_Paulo'), 'HH24')"
+	// Para PostgreSQL, usamos to_char com DATE_TRUNC e timezone São Paulo para extrair a hora
+	hourFormat := "to_char(DATE_TRUNC('hour', \"event_time\" AT TIME ZONE 'America/Sao_Paulo'), 'HH24')"
 
 	// Criar estrutura temporária para receber os resultados
 	type HourlyCount struct {
@@ -1677,9 +1681,9 @@ func (r *eventRepository) GetEventsByHours(date time.Time, eventType, userID, pr
 		query = query.Where("event_type = ?", eventType)
 	}
 
-	// Filtrar pelo intervalo de data
-	query = query.Where("(\"event_time\" AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?",
-		startOfDay, endOfDay)
+	// Filtrar pelo intervalo de data usando timezone São Paulo
+	query = query.Where("DATE_TRUNC('day', \"event_time\" AT TIME ZONE 'America/Sao_Paulo') = DATE_TRUNC('day', ? AT TIME ZONE 'America/Sao_Paulo')",
+		startOfDay)
 
 	// Aplicar outros filtros, se fornecidos
 	if userID != "" {
