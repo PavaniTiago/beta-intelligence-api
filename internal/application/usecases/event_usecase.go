@@ -28,7 +28,7 @@ func (uc *eventUseCase) GetEvents(ctx context.Context, page, limit int, orderBy 
 		page = 1
 	}
 	if limit < 1 {
-		limit = 10
+		limit = 20
 	}
 	if orderBy == "" {
 		orderBy = "event_time desc"

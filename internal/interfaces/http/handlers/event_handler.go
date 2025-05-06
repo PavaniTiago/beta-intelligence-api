@@ -24,7 +24,7 @@ func NewEventHandler(eventUseCase usecases.EventUseCase) *EventHandler {
 func (h *EventHandler) GetEvents(c *fiber.Ctx) error {
 	// Get query parameters
 	page, _ := strconv.Atoi(c.Query("page", "1"))
-	limit, _ := strconv.Atoi(c.Query("limit", "10"))
+	limit, _ := strconv.Atoi(c.Query("limit", "20"))
 
 	// Verificar se é para retornar apenas a contagem
 	countOnly := c.Query("count_only", "false") == "true"
