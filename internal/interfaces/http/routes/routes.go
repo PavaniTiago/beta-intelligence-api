@@ -41,6 +41,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 	funnelRepo := repositories.NewFunnelRepository(db)
 	sessionRepo := repositories.NewSessionRepository(db)
 	productRepo := repositories.NewProductRepository(db)
+	surveyRepo := repositories.NewSurveyRepository(db)
 
 	// Use Cases
 	userUseCase := usecases.NewUserUseCase(userRepo)
@@ -50,6 +51,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 	sessionUseCase := usecases.NewSessionUseCase(sessionRepo)
 	productUseCase := usecases.NewProductUseCase(productRepo)
 	dashboardUseCase := usecases.NewDashboardUseCase(sessionRepo, eventRepo, db)
+	surveyUseCase := usecases.NewSurveyUseCase(surveyRepo)
 
 	// Handlers
 	userHandler := handlers.NewUserHandler(userUseCase, userRepo)
@@ -59,6 +61,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 	sessionHandler := handlers.NewSessionHandler(sessionUseCase)
 	productHandler := handlers.NewProductHandler(productUseCase)
 	dashboardHandler := handlers.NewDashboardHandler(dashboardUseCase)
+	surveyHandler := handlers.NewSurveyHandler(surveyUseCase)
 
 	// Create handlers struct
 	handlersStruct := handlers.NewHandlers(nil, db)
@@ -101,6 +104,9 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 
 	// Rotas de Performance
 	setupPerformanceRoutes(groups.Public, handlersStruct.Performance)
+
+	// Rotas de pesquisas (surveys)
+	setupSurveyRoutes(groups.Public, surveyHandler)
 }
 
 // setupPerformanceRoutes configura as rotas de teste de performance
@@ -110,4 +116,16 @@ func setupPerformanceRoutes(router fiber.Router, performanceHandler *handlers.Pe
 		perfGroup.Get("/lead", performanceHandler.TestLeadPerformance)
 		perfGroup.Get("/session", performanceHandler.TestSessionPerformance)
 	}
+}
+
+// setupSurveyRoutes configura as rotas relacionadas a pesquisas
+func setupSurveyRoutes(router fiber.Router, surveyHandler *handlers.SurveyHandler) {
+	// Rota para listar todas as pesquisas
+	router.Get("/surveys", surveyHandler.GetSurveys)
+
+	// Rota para métricas agregadas de pesquisas
+	router.Get("/metrics/surveys", surveyHandler.GetSurveyMetrics)
+
+	// Rota para detalhes de uma pesquisa específica
+	router.Get("/metrics/surveys/:id", surveyHandler.GetSurveyDetails)
 }
