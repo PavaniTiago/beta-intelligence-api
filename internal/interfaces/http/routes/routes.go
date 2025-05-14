@@ -101,6 +101,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 
 	// Dashboard routes
 	groups.Public.Get("/dashboard/unified", dashboardHandler.GetUnifiedDashboard)
+	groups.Public.Get("/dashboard/profession-conversion", dashboardHandler.GetProfessionConversionRates)
 
 	// Rotas de Performance
 	setupPerformanceRoutes(groups.Public, handlersStruct.Performance)

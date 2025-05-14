@@ -99,138 +99,95 @@ func (r *SurveyRepository) GetSurveyMetrics(params map[string]interface{}) ([]ma
 	var results []map[string]interface{}
 
 	// Definir os filtros de data baseados nos parâmetros
-	dataInicio, dataInicioOk := params["data_inicio"].(time.Time)
-	dataFim, dataFimOk := params["data_fim"].(time.Time)
-
-	leadInicio, leadInicioOk := params["lead_inicio"].(time.Time)
-	leadFim, leadFimOk := params["lead_fim"].(time.Time)
-
 	pesquisaInicio, pesquisaInicioOk := params["pesquisa_inicio"].(time.Time)
 	pesquisaFim, pesquisaFimOk := params["pesquisa_fim"].(time.Time)
 
 	vendaInicio, vendaInicioOk := params["venda_inicio"].(time.Time)
 	vendaFim, vendaFimOk := params["venda_fim"].(time.Time)
 
-	// Usar filtros gerais se filtros específicos não foram fornecidos
-	if !leadInicioOk && dataInicioOk {
-		leadInicio = dataInicio
-		leadInicioOk = true
-	}
-
-	if !leadFimOk && dataFimOk {
-		leadFim = dataFim
-		leadFimOk = true
-	}
-
-	if !pesquisaInicioOk && dataInicioOk {
-		pesquisaInicio = dataInicio
-		pesquisaInicioOk = true
-	}
-
-	if !pesquisaFimOk && dataFimOk {
-		pesquisaFim = dataFim
-		pesquisaFimOk = true
-	}
-
-	if !vendaInicioOk && dataInicioOk {
-		vendaInicio = dataInicio
-		vendaInicioOk = true
-	}
-
-	if !vendaFimOk && dataFimOk {
-		vendaFim = dataFim
-		vendaFimOk = true
-	}
-
-	// Construir condições de filtro de data para cada tipo de evento
-	var leadTimeFilter, pesquisaTimeFilter, vendaTimeFilter string
-	var leadTimeArgs, pesquisaTimeArgs, vendaTimeArgs []interface{}
-
-	if leadInicioOk && leadFimOk {
-		leadTimeFilter = "e.event_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo' BETWEEN ? AND ?"
-		leadTimeArgs = []interface{}{leadInicio.Format(time.RFC3339), leadFim.Format(time.RFC3339)}
-	} else if leadInicioOk {
-		leadTimeFilter = "e.event_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo' >= ?"
-		leadTimeArgs = []interface{}{leadInicio.Format(time.RFC3339)}
-	} else if leadFimOk {
-		leadTimeFilter = "e.event_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo' <= ?"
-		leadTimeArgs = []interface{}{leadFim.Format(time.RFC3339)}
-	}
-
-	if pesquisaInicioOk && pesquisaFimOk {
-		pesquisaTimeFilter = "e.event_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo' BETWEEN ? AND ?"
-		pesquisaTimeArgs = []interface{}{pesquisaInicio.Format(time.RFC3339), pesquisaFim.Format(time.RFC3339)}
-	} else if pesquisaInicioOk {
-		pesquisaTimeFilter = "e.event_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo' >= ?"
-		pesquisaTimeArgs = []interface{}{pesquisaInicio.Format(time.RFC3339)}
-	} else if pesquisaFimOk {
-		pesquisaTimeFilter = "e.event_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo' <= ?"
-		pesquisaTimeArgs = []interface{}{pesquisaFim.Format(time.RFC3339)}
-	}
-
-	if vendaInicioOk && vendaFimOk {
-		vendaTimeFilter = "e.event_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo' BETWEEN ? AND ?"
-		vendaTimeArgs = []interface{}{vendaInicio.Format(time.RFC3339), vendaFim.Format(time.RFC3339)}
-	} else if vendaInicioOk {
-		vendaTimeFilter = "e.event_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo' >= ?"
-		vendaTimeArgs = []interface{}{vendaInicio.Format(time.RFC3339)}
-	} else if vendaFimOk {
-		vendaTimeFilter = "e.event_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo' <= ?"
-		vendaTimeArgs = []interface{}{vendaFim.Format(time.RFC3339)}
-	}
-
-	// Consulta para métricas agregadas
-	sqlQuery := `
+	// Construir a query SQL
+	query := `
 WITH pesquisa_users AS (
   SELECT user_id
   FROM events
-  WHERE event_type = 'PESQUISA_LEAD'
-  ` + func() string {
-		if pesquisaTimeFilter != "" {
-			return "AND " + pesquisaTimeFilter
-		}
-		return ""
-	}() + `
+  WHERE event_type = 'PESQUISA_LEAD'`
+
+	args := []interface{}{}
+
+	// Adicionar filtros de data para pesquisa_users
+	if pesquisaInicioOk {
+		query += `
+  AND event_time >= ?`
+		args = append(args, pesquisaInicio.Format(time.RFC3339))
+	}
+
+	if pesquisaFimOk {
+		query += `
+  AND event_time <= ?`
+		args = append(args, pesquisaFim.Format(time.RFC3339))
+	}
+
+	query += `
 ),
 
 eventos_filtrados AS (
   SELECT e.*
   FROM events e
   WHERE e.event_type IN ('LEAD', 'PESQUISA_LEAD', 'PURCHASE')
-  ` + func() string {
-		var conditions []string
+  AND (`
 
-		if leadTimeFilter != "" {
-			conditions = append(conditions, "(e.event_type = 'LEAD' AND "+leadTimeFilter+")")
-		}
+	var conditions []string
 
-		if pesquisaTimeFilter != "" {
-			conditions = append(conditions, "(e.event_type = 'PESQUISA_LEAD' AND "+pesquisaTimeFilter+")")
-		}
+	// Filtro para LEAD
+	if pesquisaInicioOk && pesquisaFimOk {
+		conditions = append(conditions, `(e.event_type = 'LEAD' AND (e.event_time >= ? AND e.event_time <= ?))`)
+		args = append(args, pesquisaInicio.Format(time.RFC3339), pesquisaFim.Format(time.RFC3339))
+	} else if pesquisaInicioOk {
+		conditions = append(conditions, `(e.event_type = 'LEAD' AND e.event_time >= ?)`)
+		args = append(args, pesquisaInicio.Format(time.RFC3339))
+	} else if pesquisaFimOk {
+		conditions = append(conditions, `(e.event_type = 'LEAD' AND e.event_time <= ?)`)
+		args = append(args, pesquisaFim.Format(time.RFC3339))
+	}
 
-		if vendaTimeFilter != "" {
-			conditions = append(conditions, "(e.event_type = 'PURCHASE' AND "+vendaTimeFilter+")")
-		}
+	// Filtro para PESQUISA_LEAD
+	if pesquisaInicioOk && pesquisaFimOk {
+		conditions = append(conditions, `(e.event_type = 'PESQUISA_LEAD' AND (e.event_time >= ? AND e.event_time <= ?))`)
+		args = append(args, pesquisaInicio.Format(time.RFC3339), pesquisaFim.Format(time.RFC3339))
+	} else if pesquisaInicioOk {
+		conditions = append(conditions, `(e.event_type = 'PESQUISA_LEAD' AND e.event_time >= ?)`)
+		args = append(args, pesquisaInicio.Format(time.RFC3339))
+	} else if pesquisaFimOk {
+		conditions = append(conditions, `(e.event_type = 'PESQUISA_LEAD' AND e.event_time <= ?)`)
+		args = append(args, pesquisaFim.Format(time.RFC3339))
+	}
 
-		if len(conditions) > 0 {
-			return "AND (" + strings.Join(conditions, " OR ") + ")"
-		}
-		return ""
-	}() + func() string {
-		if profissaoID, ok := params["profissao"].(int); ok && profissaoID > 0 {
-			return fmt.Sprintf(" AND e.profession_id = %d", profissaoID)
-		}
-		return ""
-	}() + func() string {
-		if funilID, ok := params["funil"].(int); ok && funilID > 0 {
-			return fmt.Sprintf(" AND e.funnel_id = %d", funilID)
-		}
-		return ""
-	}() + `
+	// Filtro para PURCHASE
+	if vendaInicioOk && vendaFimOk {
+		conditions = append(conditions, `(e.event_type = 'PURCHASE' AND (e.event_time >= ? AND e.event_time <= ?))`)
+		args = append(args, vendaInicio.Format(time.RFC3339), vendaFim.Format(time.RFC3339))
+	} else if vendaInicioOk {
+		conditions = append(conditions, `(e.event_type = 'PURCHASE' AND e.event_time >= ?)`)
+		args = append(args, vendaInicio.Format(time.RFC3339))
+	} else if vendaFimOk {
+		conditions = append(conditions, `(e.event_type = 'PURCHASE' AND e.event_time <= ?)`)
+		args = append(args, vendaFim.Format(time.RFC3339))
+	}
+
+	// Se não houver condições específicas, adicione uma condição que seja sempre verdadeira
+	if len(conditions) == 0 {
+		query += "1=1"
+	} else {
+		query += strings.Join(conditions, " OR ")
+	}
+
+	query += `
+  )
 ),
 
 base AS (
   SELECT 
+    s.survey_id,
     s.survey_name,
     f.funnel_name,
     p.profession_name,
@@ -240,76 +197,68 @@ base AS (
   JOIN funnels f ON s.funnel_id = f.funnel_id
   JOIN products pr ON f.product_id = pr.product_id
   JOIN professions p ON pr.profession_id = p.profession_id
-  LEFT JOIN eventos_filtrados e ON f.funnel_id = e.funnel_id
-  ` + func() string {
-		if pesquisaID, ok := params["pesquisa_id"].(int64); ok && pesquisaID > 0 {
-			return fmt.Sprintf("WHERE s.survey_id = %d", pesquisaID)
-		}
-		return ""
-	}() + `
+  LEFT JOIN eventos_filtrados e ON f.funnel_id = e.funnel_id`
+
+	// Adicionar WHERE para pesquisa específica
+	if pesquisaID, ok := params["pesquisa_id"].(int64); ok && pesquisaID > 0 {
+		query += `
+  WHERE s.survey_id = ?`
+		args = append(args, pesquisaID)
+	}
+
+	query += `
 )
 
 SELECT 
-  s.survey_id AS survey_id,
-  b.survey_name AS nome_pesquisa,
-  b.funnel_name AS funil,
+  b.survey_id AS pesquisa_id,
+  b.survey_name AS survey_name,
+  b.funnel_name,
   b.profession_name AS profissao,
 
-  COUNT(DISTINCT b.user_id) FILTER (WHERE b.event_type = 'LEAD') AS total_leads,
-  COUNT(DISTINCT b.user_id) FILTER (WHERE b.event_type = 'PESQUISA_LEAD') AS total_respostas,
+  COUNT(*) FILTER (WHERE b.event_type = 'LEAD') AS total_leads,
+  COUNT(*) FILTER (WHERE b.event_type = 'PESQUISA_LEAD') AS total_respostas,
 
-  COUNT(DISTINCT b.user_id) FILTER (
+  COUNT(*) FILTER (
     WHERE b.event_type = 'PURCHASE' 
       AND b.user_id IN (SELECT user_id FROM pesquisa_users)
-  ) AS total_vendas,
+  ) AS total_vendas_com_pesquisa,
 
   ROUND(
-    (COUNT(DISTINCT b.user_id) FILTER (WHERE b.event_type = 'PESQUISA_LEAD')::numeric /
-     NULLIF(COUNT(DISTINCT b.user_id) FILTER (WHERE b.event_type = 'LEAD'), 0)::numeric) * 100, 
+    (COUNT(*) FILTER (WHERE b.event_type = 'PESQUISA_LEAD')::numeric /
+     NULLIF(COUNT(*) FILTER (WHERE b.event_type = 'LEAD'), 0)::numeric) * 100, 
     2
-  ) / 100 AS taxa_resposta,
+  ) / 100 AS taxa_resposta_calculada,
 
   ROUND(
-    (COUNT(DISTINCT b.user_id) FILTER (
+    (COUNT(*) FILTER (
        WHERE b.event_type = 'PURCHASE' 
          AND b.user_id IN (SELECT user_id FROM pesquisa_users)
      )::numeric /
-     NULLIF(COUNT(DISTINCT b.user_id) FILTER (WHERE b.event_type = 'PESQUISA_LEAD'), 0)::numeric) * 100,
+     NULLIF(COUNT(*) FILTER (WHERE b.event_type = 'PESQUISA_LEAD'), 0)::numeric) * 100,
     2
-  ) / 100 AS conversao_vendas
+  ) / 100 AS conversao_vendas_calculada
 
 FROM base b
-JOIN surveys s ON s.survey_name = b.survey_name
 GROUP BY 
-  s.survey_id,
+  b.survey_id,
   b.survey_name,
   b.funnel_name,
   b.profession_name;`
 
-	// Preparar os argumentos da consulta
-	args := []interface{}{}
-	if leadTimeFilter != "" {
-		args = append(args, leadTimeArgs...)
-	}
-	if pesquisaTimeFilter != "" {
-		args = append(args, pesquisaTimeArgs...)
-	}
-	if vendaTimeFilter != "" {
-		args = append(args, vendaTimeArgs...)
-	}
+	// Imprimir a query e os argumentos para debug
+	fmt.Printf("FINAL SQL QUERY: %s\n", query)
+	fmt.Printf("FINAL SQL ARGS: %v\n", args)
 
 	// Executar a consulta
-	if err := r.db.Raw(sqlQuery, args...).Scan(&results).Error; err != nil {
+	if err := r.db.Raw(query, args...).Scan(&results).Error; err != nil {
 		return nil, fmt.Errorf("erro ao buscar métricas de pesquisa: %w", err)
 	}
 
 	return results, nil
 }
 
-// GetSurveyDetails retorna detalhes de uma pesquisa específica, incluindo análise por pergunta e resposta
+// GetSurveyDetails retorna detalhes de uma pesquisa específica com métricas agregadas
 func (r *SurveyRepository) GetSurveyDetails(surveyID int64, params map[string]interface{}) ([]map[string]interface{}, error) {
-	var results []map[string]interface{}
-
 	// Verificar se a pesquisa existe
 	var survey entities.Survey
 	if err := r.db.Where("survey_id = ?", surveyID).First(&survey).Error; err != nil {
@@ -317,208 +266,386 @@ func (r *SurveyRepository) GetSurveyDetails(surveyID int64, params map[string]in
 	}
 
 	// Definir os filtros de data baseados nos parâmetros
-	dataInicio, dataInicioOk := params["data_inicio"].(time.Time)
-	dataFim, dataFimOk := params["data_fim"].(time.Time)
-
 	pesquisaInicio, pesquisaInicioOk := params["pesquisa_inicio"].(time.Time)
 	pesquisaFim, pesquisaFimOk := params["pesquisa_fim"].(time.Time)
-
 	vendaInicio, vendaInicioOk := params["venda_inicio"].(time.Time)
 	vendaFim, vendaFimOk := params["venda_fim"].(time.Time)
 
-	// Usar filtros gerais se filtros específicos não foram fornecidos
-	if !pesquisaInicioOk && dataInicioOk {
-		pesquisaInicio = dataInicio
-		pesquisaInicioOk = true
+	// Log para debug
+	fmt.Printf("Survey ID: %d, Params: %+v\n", surveyID, params)
+	fmt.Printf("Date Params - pesquisa_inicio: %v, pesquisa_fim: %v, venda_inicio: %v, venda_fim: %v\n",
+		pesquisaInicio, pesquisaFim, vendaInicio, vendaFim)
+
+	// Formatar as datas para a consulta SQL
+	pesquisaInicioStr := "(TIMESTAMP '1900-01-01 00:00:00-03:00')"
+	if pesquisaInicioOk {
+		pesquisaInicioStr = fmt.Sprintf("(TIMESTAMP '%s')",
+			pesquisaInicio.Format("2006-01-02 15:04:05-07:00"))
 	}
 
-	if !pesquisaFimOk && dataFimOk {
-		pesquisaFim = dataFim
-		pesquisaFimOk = true
+	pesquisaFimStr := "(TIMESTAMP '9999-12-31 23:59:59-03:00')"
+	if pesquisaFimOk {
+		pesquisaFimStr = fmt.Sprintf("(TIMESTAMP '%s')",
+			pesquisaFim.Format("2006-01-02 15:04:05-07:00"))
 	}
 
-	if !vendaInicioOk && dataInicioOk {
-		vendaInicio = dataInicio
-		vendaInicioOk = true
+	vendaInicioStr := "(TIMESTAMP '1900-01-01 00:00:00-03:00')"
+	if vendaInicioOk {
+		vendaInicioStr = fmt.Sprintf("(TIMESTAMP '%s')",
+			vendaInicio.Format("2006-01-02 15:04:05-07:00"))
 	}
 
-	if !vendaFimOk && dataFimOk {
-		vendaFim = dataFim
-		vendaFimOk = true
+	vendaFimStr := "(TIMESTAMP '9999-12-31 23:59:59-03:00')"
+	if vendaFimOk {
+		vendaFimStr = fmt.Sprintf("(TIMESTAMP '%s')",
+			vendaFim.Format("2006-01-02 15:04:05-07:00"))
 	}
 
-	// Construir condições de filtro de data
-	var pesquisaTimeFilter, vendaTimeFilter string
-	var pesquisaTimeArgs, vendaTimeArgs []interface{}
-
-	if pesquisaInicioOk && pesquisaFimOk {
-		pesquisaTimeFilter = "sr.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo' BETWEEN ? AND ?"
-		pesquisaTimeArgs = []interface{}{pesquisaInicio.Format(time.RFC3339), pesquisaFim.Format(time.RFC3339)}
-	} else if pesquisaInicioOk {
-		pesquisaTimeFilter = "sr.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo' >= ?"
-		pesquisaTimeArgs = []interface{}{pesquisaInicio.Format(time.RFC3339)}
-	} else if pesquisaFimOk {
-		pesquisaTimeFilter = "sr.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo' <= ?"
-		pesquisaTimeArgs = []interface{}{pesquisaFim.Format(time.RFC3339)}
-	}
-
-	if vendaInicioOk && vendaFimOk {
-		vendaTimeFilter = "e.event_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo' BETWEEN ? AND ?"
-		vendaTimeArgs = []interface{}{vendaInicio.Format(time.RFC3339), vendaFim.Format(time.RFC3339)}
-	} else if vendaInicioOk {
-		vendaTimeFilter = "e.event_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo' >= ?"
-		vendaTimeArgs = []interface{}{vendaInicio.Format(time.RFC3339)}
-	} else if vendaFimOk {
-		vendaTimeFilter = "e.event_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo' <= ?"
-		vendaTimeArgs = []interface{}{vendaFim.Format(time.RFC3339)}
-	}
-
-	// Consulta para detalhes por perguntas e opções de resposta
-	sqlQuery := `
-WITH responses AS (
-  SELECT 
-    sr.id AS response_id,
-    sr.event_id,
-    sr.total_score,
-    sr.completed,
-    sr.faixa,
-    e.user_id,
-    s.survey_id,
-    s.survey_name,
-    f.funnel_id,
-    f.funnel_name,
-    pr.product_id,
-    p.profession_id,
-    p.profession_name
-  FROM survey_responses sr
-  JOIN events e ON sr.event_id = e.event_id
-  JOIN surveys s ON sr.survey_id = s.survey_id
-  JOIN funnels f ON s.funnel_id = f.funnel_id
-  JOIN products pr ON f.product_id = pr.product_id
-  JOIN professions p ON pr.profession_id = p.profession_id
-  WHERE sr.survey_id = ?
-  ` + func() string {
-		if pesquisaTimeFilter != "" {
-			return "AND " + pesquisaTimeFilter
-		}
-		return ""
-	}() + `
+	// Consulta principal exatamente como fornecida
+	mainQuery := fmt.Sprintf(`
+WITH parametros AS (
+    SELECT 
+        %s AT TIME ZONE 'America/Sao_Paulo' AS pesquisa_inicio,
+        %s AT TIME ZONE 'America/Sao_Paulo' AS pesquisa_fim,
+        %s AT TIME ZONE 'America/Sao_Paulo' AS venda_inicio,
+        %s AT TIME ZONE 'America/Sao_Paulo' AS venda_fim
 ),
 
-vendas AS (
-  SELECT 
-    e.user_id
+eventos_pesquisa AS (
+  SELECT
+    funnel_id,
+    user_id,
+    event_type
   FROM events e
-  WHERE e.event_type = 'PURCHASE'
-  ` + func() string {
-		if vendaTimeFilter != "" {
-			return "AND " + vendaTimeFilter
-		}
-		return ""
-	}() + `
-  AND e.user_id IN (SELECT DISTINCT user_id FROM responses)
+  WHERE event_time BETWEEN 
+        (SELECT pesquisa_inicio FROM parametros) AND (SELECT pesquisa_fim FROM parametros)
+    AND event_type IN ('LEAD', 'PESQUISA_LEAD')
 ),
 
-answers_grouped AS (
+eventos_venda AS (
   SELECT
-    sa.question_id,
-    sa.question_text,
-    sa.value,
-    sa.score,
-    r.profession_name,
-    COUNT(DISTINCT sa.survey_response_id) AS num_respostas,
-    COUNT(DISTINCT v.user_id) AS num_vendas
+    funnel_id,
+    user_id
+  FROM events e
+  WHERE event_time BETWEEN 
+        (SELECT venda_inicio FROM parametros) AND (SELECT venda_fim FROM parametros)
+    AND event_type = 'PURCHASE'
+),
+
+eventos_por_funnel AS (
+  SELECT
+    ep.funnel_id,
+    COUNT(*) FILTER (WHERE ep.event_type = 'LEAD') AS total_leads,
+    COUNT(*) FILTER (WHERE ep.event_type = 'PESQUISA_LEAD') AS total_respostas,
+    COUNT(*) FILTER (
+      WHERE ep.event_type = 'PESQUISA_LEAD'
+        AND ep.user_id IN (
+          SELECT ev.user_id FROM eventos_venda ev WHERE ev.funnel_id = ep.funnel_id
+        )
+    ) AS total_vendas
+  FROM eventos_pesquisa ep
+  GROUP BY ep.funnel_id
+),
+
+tempo_resposta_por_survey AS (
+  SELECT
+    sr.survey_id,
+    ROUND(SUM(sa.time_to_answer)::numeric / NULLIF(COUNT(sa.time_to_answer), 0), 2) AS tempo_medio_resposta
   FROM survey_answers sa
-  JOIN responses r ON sa.survey_response_id = r.response_id
-  LEFT JOIN vendas v ON r.user_id = v.user_id
-  GROUP BY
-    sa.question_id,
-    sa.question_text,
-    sa.value,
-    sa.score,
-    r.profession_name
+  JOIN survey_responses sr ON sa.survey_response_id = sr.id
+  WHERE sr.created_at BETWEEN 
+    (SELECT pesquisa_inicio FROM parametros) AND 
+    (SELECT pesquisa_fim FROM parametros)
+  GROUP BY sr.survey_id
 ),
 
-base_stats AS (
+tempo_medio_por_usuario AS (
   SELECT
-    COUNT(DISTINCT responses.response_id) AS total_responses,
-    COUNT(DISTINCT vendas.user_id) AS total_vendas,
-    responses.profession_name
-  FROM responses
-  LEFT JOIN vendas ON responses.user_id = vendas.user_id
-  GROUP BY responses.profession_name
+    respostas_agrupadas.survey_id,
+    ROUND(AVG(respostas_agrupadas.total_pesquisa)::numeric, 2) AS tempo_medio_resposta_por_usuario
+  FROM (
+    SELECT
+      sr.survey_id,
+      sr.id AS survey_response_id,
+      SUM(sa.time_to_answer) AS total_pesquisa
+    FROM survey_responses sr
+    JOIN survey_answers sa ON sa.survey_response_id = sr.id
+    WHERE sr.created_at BETWEEN 
+      (SELECT pesquisa_inicio FROM parametros) AND 
+      (SELECT pesquisa_fim FROM parametros)
+    GROUP BY sr.survey_id, sr.id
+  ) respostas_agrupadas
+  GROUP BY respostas_agrupadas.survey_id
 )
 
 SELECT
-  ag.question_id AS pergunta_id,
-  ag.question_text AS texto_pergunta,
-  ag.value AS texto_opcao,
-  ag.score AS score_peso,
-  ag.profession_name AS profissao,
-  ag.num_respostas,
-  ROUND((ag.num_respostas::numeric / bs.total_responses::numeric) * 100, 2) AS percentual_participacao,
-  ag.num_vendas,
-  CASE WHEN ag.num_respostas > 0 
-    THEN ROUND((ag.num_vendas::numeric / ag.num_respostas::numeric) * 100, 2)
-    ELSE 0 
-  END AS taxa_conversao_percentual,
-  CASE WHEN bs.total_vendas > 0 
-    THEN ROUND((ag.num_vendas::numeric / bs.total_vendas::numeric) * 100, 2) 
-    ELSE 0 
-  END AS percentual_vendas
-FROM answers_grouped ag
-JOIN base_stats bs ON ag.profession_name = bs.profession_name
-ORDER BY 
-  ag.question_id,
-  ag.num_respostas DESC;`
+  s.survey_id AS pesquisa_id,
+  s.survey_name AS nome_pesquisa,
+  p.profession_name AS profissao,
+  f.funnel_name AS funil,
 
-	// Preparar os argumentos da consulta
-	args := []interface{}{surveyID}
-	if pesquisaTimeFilter != "" {
-		args = append(args, pesquisaTimeArgs...)
+  -- Totais
+  COALESCE(epf.total_leads, 0) AS total_leads,
+  COALESCE(epf.total_respostas, 0) AS total_respostas,
+  COALESCE(epf.total_vendas, 0) AS total_vendas,
+
+  -- Taxas
+  ROUND(100.0 * COALESCE(epf.total_respostas, 0) / NULLIF(epf.total_leads, 0), 2) AS taxa_resposta_percentual,
+  ROUND(100.0 * COALESCE(epf.total_vendas, 0) / NULLIF(epf.total_respostas, 0), 2) AS taxa_conversao_percentual,
+
+  -- Tempos
+  COALESCE(trps.tempo_medio_resposta, 0) AS tempo_medio_resposta,
+  COALESCE(tmpu.tempo_medio_resposta_por_usuario, 0) AS tempo_medio_resposta_por_usuario
+
+FROM surveys s
+JOIN funnels f ON s.funnel_id = f.funnel_id
+JOIN products pr ON f.product_id = pr.product_id
+JOIN professions p ON pr.profession_id = p.profession_id
+LEFT JOIN eventos_por_funnel epf ON epf.funnel_id = f.funnel_id
+LEFT JOIN tempo_resposta_por_survey trps ON trps.survey_id = s.survey_id
+LEFT JOIN tempo_medio_por_usuario tmpu ON tmpu.survey_id = s.survey_id
+WHERE s.survey_id = %d
+ORDER BY s.survey_name
+`,
+		pesquisaInicioStr, pesquisaFimStr,
+		vendaInicioStr, vendaFimStr,
+		surveyID)
+
+	// Imprimir a query para debug
+	fmt.Printf("FINAL DETAILS SQL QUERY: %s\n", mainQuery)
+
+	// Executar a consulta principal
+	var mainResults []map[string]interface{}
+	if err := r.db.Raw(mainQuery).Scan(&mainResults).Error; err != nil {
+		return nil, fmt.Errorf("erro ao executar consulta de detalhes da pesquisa: %w", err)
 	}
-	if vendaTimeFilter != "" {
-		args = append(args, vendaTimeArgs...)
+
+	// Verificar se retornou resultados
+	if len(mainResults) == 0 {
+		// Retornar uma estrutura vazia com mensagem em vez de erro
+		return []map[string]interface{}{
+			{
+				"pesquisa_id":                      surveyID,
+				"nome_pesquisa":                    "Pesquisa não encontrada ou sem dados para o período",
+				"profissao":                        "",
+				"funil":                            "",
+				"total_leads":                      0,
+				"total_respostas":                  0,
+				"total_vendas":                     0,
+				"taxa_resposta_percentual":         0,
+				"taxa_conversao_percentual":        0,
+				"tempo_medio_resposta":             0,
+				"tempo_medio_resposta_por_usuario": 0,
+				"questoes":                         []interface{}{},
+			},
+		}, nil
 	}
 
-	// Executar a consulta
-	if err := r.db.Raw(sqlQuery, args...).Scan(&results).Error; err != nil {
-		return nil, fmt.Errorf("erro ao buscar detalhes da pesquisa: %w", err)
+	// Consulta para análise detalhada por questão/resposta
+	detailQuery := fmt.Sprintf(`
+WITH parametros AS (
+    SELECT 
+        %s AT TIME ZONE 'America/Sao_Paulo' AS pesquisa_inicio,
+        %s AT TIME ZONE 'America/Sao_Paulo' AS pesquisa_fim,
+        %s AT TIME ZONE 'America/Sao_Paulo' AS venda_inicio,
+        %s AT TIME ZONE 'America/Sao_Paulo' AS venda_fim
+),
+
+-- Identificar usuários que compraram no período especificado
+compradores AS (
+    SELECT DISTINCT
+        v.user_id
+    FROM
+        events v
+    WHERE
+        v.funnel_id = (SELECT funnel_id FROM surveys WHERE survey_id = %d)
+        AND v.event_type = 'PURCHASE'
+        AND v.event_time BETWEEN (SELECT venda_inicio FROM parametros) AND (SELECT venda_fim FROM parametros)
+        AND EXISTS (
+            SELECT 1
+            FROM events pesq
+            WHERE pesq.user_id = v.user_id
+            AND pesq.event_type = 'PESQUISA_LEAD'
+        )
+),
+
+-- Mapeamento direto de cada comprador para sua resposta na pesquisa
+respostas_compradores AS (
+    SELECT
+        c.user_id,
+        sa.question_id,
+        sa.question_text,
+        sa.value AS resposta,
+        sa.score
+    FROM
+        compradores c
+        CROSS JOIN LATERAL (
+            SELECT 
+                sa.question_id,
+                sa.question_text,
+                sa.value,
+                sa.score,
+                e.event_time
+            FROM 
+                events e
+                JOIN survey_responses sr ON sr.event_id = e.event_id
+                JOIN survey_answers sa ON sa.survey_response_id = sr.id
+            WHERE 
+                e.user_id = c.user_id
+                AND e.event_type = 'PESQUISA_LEAD'
+                AND sr.survey_id = %d
+            ORDER BY 
+                e.event_time DESC
+            LIMIT 1
+        ) sa
+),
+
+-- Todas as respostas de pesquisa no período especificado
+todas_respostas AS (
+    SELECT
+        sa.question_id,
+        sa.question_text,
+        sa.value AS resposta,
+        sa.score,
+        e.user_id
+    FROM
+        survey_answers sa
+        JOIN survey_responses sr ON sa.survey_response_id = sr.id
+        JOIN events e ON sr.event_id = e.event_id
+    WHERE
+        e.event_type = 'PESQUISA_LEAD'
+        AND sr.survey_id = %d
+        AND e.event_time BETWEEN (SELECT pesquisa_inicio FROM parametros) AND (SELECT pesquisa_fim FROM parametros)
+),
+
+-- Agrupamento de respostas por pergunta e alternativa
+respostas_agrupadas AS (
+    SELECT
+        question_id,
+        question_text,
+        resposta,
+        score,
+        COUNT(DISTINCT user_id) AS total_respondentes
+    FROM
+        todas_respostas
+    GROUP BY
+        question_id, question_text, resposta, score
+),
+
+-- Contagem de vendas por resposta (usando o mapeamento direto)
+vendas_por_resposta AS (
+    SELECT
+        question_id,
+        question_text,
+        resposta,
+        score,
+        COUNT(DISTINCT user_id) AS total_compradores
+    FROM
+        respostas_compradores
+    GROUP BY
+        question_id, question_text, resposta, score
+),
+
+-- Totais por pergunta para cálculo de percentuais
+totais_pergunta AS (
+    SELECT
+        question_id,
+        SUM(total_respondentes) AS total_respostas_pergunta
+    FROM
+        respostas_agrupadas
+    GROUP BY
+        question_id
+),
+
+-- Total geral de vendas para referência
+total_vendas AS (
+    SELECT COUNT(DISTINCT user_id) AS total FROM compradores
+)
+
+-- Resultado final
+SELECT
+    ra.question_id,
+    ra.question_text,
+    ra.score AS score_peso,
+    ra.resposta,
+    ra.total_respondentes AS num_respostas,
+    ROUND((ra.total_respondentes * 100.0 / tp.total_respostas_pergunta)::numeric, 2) AS participacao_percentual,
+    COALESCE(vpr.total_compradores, 0) AS num_vendas,
+    CASE 
+        WHEN ra.total_respondentes > 0 THEN 
+            ROUND((COALESCE(vpr.total_compradores, 0) * 100.0 / ra.total_respondentes)::numeric, 2)
+        ELSE 0 
+    END AS taxa_conversao_percentual,
+    -- Percentual em relação ao total de vendas
+    CASE 
+        WHEN (SELECT total FROM total_vendas) > 0 THEN
+            ROUND((COALESCE(vpr.total_compradores, 0) * 100.0 / (SELECT total FROM total_vendas))::numeric, 2) 
+        ELSE 0
+    END AS percentual_do_total_vendas
+FROM
+    respostas_agrupadas ra
+    JOIN totais_pergunta tp ON ra.question_id = tp.question_id
+    LEFT JOIN vendas_por_resposta vpr ON 
+        ra.question_id = vpr.question_id AND 
+        ra.resposta = vpr.resposta
+    CROSS JOIN total_vendas
+ORDER BY
+    ra.question_id, 
+    num_vendas DESC, 
+    participacao_percentual DESC;
+`,
+		pesquisaInicioStr, pesquisaFimStr,
+		vendaInicioStr, vendaFimStr,
+		survey.FunnelID, surveyID, surveyID)
+
+	fmt.Printf("DETAIL ANALYTICS QUERY: %s\n", detailQuery)
+
+	// Executar a consulta de detalhes por questão/resposta
+	var detailResults []map[string]interface{}
+	if err := r.db.Raw(detailQuery).Scan(&detailResults).Error; err != nil {
+		return nil, fmt.Errorf("erro ao executar consulta de análise por questão/resposta: %w", err)
 	}
 
-	// Reorganizar os resultados por pergunta e suas opções
-	questions := make(map[string]map[string]interface{})
-	for _, row := range results {
-		perguntaID, _ := row["pergunta_id"].(string)
+	// Processar os resultados para organizar as respostas por questão
+	questionMap := make(map[string]map[string]interface{})
 
-		if _, exists := questions[perguntaID]; !exists {
-			questions[perguntaID] = map[string]interface{}{
-				"pergunta_id":    perguntaID,
-				"texto_pergunta": row["texto_pergunta"],
-				"profissao":      row["profissao"],
-				"respostas":      []map[string]interface{}{},
+	for _, row := range detailResults {
+		questionID, _ := row["question_id"].(string)
+		questionText, _ := row["question_text"].(string)
+
+		// Criar a entrada para a questão se não existir
+		if _, exists := questionMap[questionID]; !exists {
+			questionMap[questionID] = map[string]interface{}{
+				"question_id":   questionID,
+				"question_text": questionText,
+				"respostas":     []map[string]interface{}{},
 			}
 		}
 
+		// Adicionar a resposta atual à lista de respostas da questão
+		respostas := questionMap[questionID]["respostas"].([]map[string]interface{})
+
 		resposta := map[string]interface{}{
-			"texto_opcao":               row["texto_opcao"],
-			"score_peso":                row["score_peso"],
-			"num_respostas":             row["num_respostas"],
-			"percentual_participacao":   row["percentual_participacao"],
-			"num_vendas":                row["num_vendas"],
-			"taxa_conversao_percentual": row["taxa_conversao_percentual"],
-			"percentual_vendas":         row["percentual_vendas"],
+			"resposta":                   row["resposta"],
+			"score_peso":                 row["score_peso"],
+			"num_respostas":              row["num_respostas"],
+			"participacao_percentual":    row["participacao_percentual"],
+			"num_vendas":                 row["num_vendas"],
+			"taxa_conversao_percentual":  row["taxa_conversao_percentual"],
+			"percentual_do_total_vendas": row["percentual_do_total_vendas"],
 		}
 
-		respostas, _ := questions[perguntaID]["respostas"].([]map[string]interface{})
-		questions[perguntaID]["respostas"] = append(respostas, resposta)
+		questionMap[questionID]["respostas"] = append(respostas, resposta)
 	}
 
-	// Converter o mapa para slice
-	formattedResults := []map[string]interface{}{}
-	for _, question := range questions {
-		formattedResults = append(formattedResults, question)
+	// Converter o mapa de questões para um slice
+	questoes := make([]map[string]interface{}, 0, len(questionMap))
+	for _, q := range questionMap {
+		questoes = append(questoes, q)
 	}
 
-	return formattedResults, nil
+	// Adicionar as questões ao resultado principal
+	mainResults[0]["questoes"] = questoes
+
+	return mainResults, nil
 }

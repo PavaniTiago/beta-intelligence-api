@@ -91,6 +91,7 @@ type DashboardResult struct {
 // DashboardUseCase define a interface para operações do dashboard unificado
 type DashboardUseCase interface {
 	GetUnifiedDashboard(params map[string]string, currentPeriod DatePeriod, previousPeriod DatePeriod) (DashboardResult, error)
+	GetProfessionConversionRates(currentPeriod DatePeriod, previousPeriod DatePeriod) (map[string]interface{}, error)
 }
 
 // ISessionRepository adiciona a interface do repositório de sessão necessária para otimização
@@ -1029,6 +1030,245 @@ func (uc *dashboardUseCase) obterDadosComparacao(
 	}
 
 	log.Printf("Dados de comparação encontrados: %d sessões, %d leads", result.Sessions, result.Leads)
+
+	return result, nil
+}
+
+// ProfessionConversionData representa os dados de conversão para uma profissão
+type ProfessionConversionData struct {
+	ProfessionID   int     `json:"profession_id"`
+	ProfessionName string  `json:"profession_name"`
+	ConversionRate float64 `json:"conversion_rate"`
+	Growth         float64 `json:"growth"`
+	IsIncreasing   bool    `json:"is_increasing"`
+}
+
+// Estruturas para agregação de dados por profissão
+type SessionAggregate struct {
+	ProfessionID int   `gorm:"column:profession_id"`
+	Count        int64 `gorm:"column:count"`
+}
+
+type LeadAggregate struct {
+	ProfessionID int   `gorm:"column:profession_id"`
+	Count        int64 `gorm:"column:count"`
+}
+
+// GetProfessionConversionRates implementa a lógica para obter taxas de conversão para todas as profissões
+// Versão otimizada usando GROUP BY e reduzindo o número de queries ao banco de dados
+func (uc *dashboardUseCase) GetProfessionConversionRates(
+	currentPeriod DatePeriod,
+	previousPeriod DatePeriod,
+) (map[string]interface{}, error) {
+	// Iniciar timer para medir tempo de processamento
+	startTime := time.Now()
+
+	// Consultar todas as profissões no sistema, excluindo as que estão em teste
+	var professions []struct {
+		ProfessionID   int    `gorm:"column:profession_id"`
+		ProfessionName string `gorm:"column:profession_name"`
+	}
+
+	// Construir a consulta com base na existência da coluna is_testing
+	query := uc.db.Table("professions").Select("profession_id, profession_name")
+
+	query = query.Where("is_testing IS NULL OR is_testing = ?", false)
+
+	// Executar a consulta
+	if err := query.Find(&professions).Error; err != nil {
+		return nil, fmt.Errorf("erro ao consultar profissões: %w", err)
+	}
+
+	// Criar mapa de ID -> Nome para uso posterior
+	professionMap := make(map[int]string)
+	for _, p := range professions {
+		professionMap[p.ProfessionID] = p.ProfessionName
+	}
+
+	// 1. QUERY OTIMIZADA: Contagem de sessões para o período atual agrupadas por profissão
+	var sessionsCurrentPeriod []SessionAggregate
+	sessionsCurrentQuery := `
+		SELECT profession_id, COUNT(*) as count
+		FROM sessions
+		WHERE "landingPage" = ?
+		AND ("sessionStart" AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?
+		GROUP BY profession_id
+	`
+
+	// Formatar as datas para o formato do PostgreSQL
+	currentFromStr := currentPeriod.From.Format("2006-01-02")
+	currentToStr := currentPeriod.To.Format("2006-01-02")
+
+	// Ajustar hora e minuto se timeFrom fornecido
+	if currentPeriod.TimeFrom != "" {
+		currentFromStr = fmt.Sprintf("%s %s:00", currentFromStr, currentPeriod.TimeFrom)
+	} else {
+		currentFromStr = fmt.Sprintf("%s 00:00:00", currentFromStr)
+	}
+
+	// Ajustar hora e minuto se timeTo fornecido
+	if currentPeriod.TimeTo != "" {
+		currentToStr = fmt.Sprintf("%s %s:59", currentToStr, currentPeriod.TimeTo)
+	} else {
+		currentToStr = fmt.Sprintf("%s 23:59:59", currentToStr)
+	}
+
+	if err := uc.db.Raw(sessionsCurrentQuery,
+		"lp.vagasjustica.com.br",
+		currentFromStr,
+		currentToStr,
+	).Scan(&sessionsCurrentPeriod).Error; err != nil {
+		return nil, fmt.Errorf("erro ao buscar sessões do período atual: %w", err)
+	}
+
+	// 2. QUERY OTIMIZADA: Contagem de sessões para o período anterior agrupadas por profissão
+	var sessionsPreviousPeriod []SessionAggregate
+	sessionsPreviousQuery := `
+		SELECT profession_id, COUNT(*) as count
+		FROM sessions
+		WHERE "landingPage" = ?
+		AND ("sessionStart" AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?
+		GROUP BY profession_id
+	`
+
+	// Formatar as datas para o formato do PostgreSQL
+	previousFromStr := previousPeriod.From.Format("2006-01-02")
+	previousToStr := previousPeriod.To.Format("2006-01-02")
+
+	// Ajustar hora e minuto se timeFrom fornecido
+	if previousPeriod.TimeFrom != "" {
+		previousFromStr = fmt.Sprintf("%s %s:00", previousFromStr, previousPeriod.TimeFrom)
+	} else {
+		previousFromStr = fmt.Sprintf("%s 00:00:00", previousFromStr)
+	}
+
+	// Ajustar hora e minuto se timeTo fornecido
+	if previousPeriod.TimeTo != "" {
+		previousToStr = fmt.Sprintf("%s %s:59", previousToStr, previousPeriod.TimeTo)
+	} else {
+		previousToStr = fmt.Sprintf("%s 23:59:59", previousToStr)
+	}
+
+	if err := uc.db.Raw(sessionsPreviousQuery,
+		"lp.vagasjustica.com.br",
+		previousFromStr,
+		previousToStr,
+	).Scan(&sessionsPreviousPeriod).Error; err != nil {
+		return nil, fmt.Errorf("erro ao buscar sessões do período anterior: %w", err)
+	}
+
+	// 3. QUERY OTIMIZADA: Contagem de leads para o período atual agrupadas por profissão
+	var leadsCurrentPeriod []LeadAggregate
+	leadsCurrentQuery := `
+		SELECT profession_id, COUNT(*) as count
+		FROM events
+		WHERE event_type = 'LEAD'
+		AND (event_time AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?
+		GROUP BY profession_id
+	`
+
+	if err := uc.db.Raw(leadsCurrentQuery,
+		currentFromStr,
+		currentToStr,
+	).Scan(&leadsCurrentPeriod).Error; err != nil {
+		return nil, fmt.Errorf("erro ao buscar leads do período atual: %w", err)
+	}
+
+	// 4. QUERY OTIMIZADA: Contagem de leads para o período anterior agrupadas por profissão
+	var leadsPreviousPeriod []LeadAggregate
+	leadsPreviousQuery := `
+		SELECT profession_id, COUNT(*) as count
+		FROM events
+		WHERE event_type = 'LEAD'
+		AND (event_time AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?
+		GROUP BY profession_id
+	`
+
+	if err := uc.db.Raw(leadsPreviousQuery,
+		previousFromStr,
+		previousToStr,
+	).Scan(&leadsPreviousPeriod).Error; err != nil {
+		return nil, fmt.Errorf("erro ao buscar leads do período anterior: %w", err)
+	}
+
+	// Mapear os resultados das queries para mapas em memória
+	currentSessionsByProfession := make(map[int]int64)
+	for _, s := range sessionsCurrentPeriod {
+		currentSessionsByProfession[s.ProfessionID] = s.Count
+	}
+
+	previousSessionsByProfession := make(map[int]int64)
+	for _, s := range sessionsPreviousPeriod {
+		previousSessionsByProfession[s.ProfessionID] = s.Count
+	}
+
+	currentLeadsByProfession := make(map[int]int64)
+	for _, l := range leadsCurrentPeriod {
+		currentLeadsByProfession[l.ProfessionID] = l.Count
+	}
+
+	previousLeadsByProfession := make(map[int]int64)
+	for _, l := range leadsPreviousPeriod {
+		previousLeadsByProfession[l.ProfessionID] = l.Count
+	}
+
+	// Processar e calcular resultados
+	professionData := make(map[string]ProfessionConversionData)
+
+	// Processar todas as profissões
+	for profID, profName := range professionMap {
+		// Obter contagens dos mapas
+		currentSessions := currentSessionsByProfession[profID]
+		previousSessions := previousSessionsByProfession[profID]
+		currentLeads := currentLeadsByProfession[profID]
+		previousLeads := previousLeadsByProfession[profID]
+
+		// Calcular taxa de conversão atual
+		var currentRate float64
+		if currentSessions > 0 {
+			currentRate = float64(currentLeads) / float64(currentSessions) * 100
+		}
+
+		// Calcular taxa de conversão anterior
+		var previousRate float64
+		if previousSessions > 0 {
+			previousRate = float64(previousLeads) / float64(previousSessions) * 100
+		}
+
+		// Calcular crescimento
+		var growth float64
+		var isIncreasing bool
+
+		if previousRate > 0 {
+			growth = ((currentRate - previousRate) / previousRate) * 100
+			isIncreasing = growth > 0
+		} else if currentRate > 0 {
+			growth = 100 // Se não havia conversão antes e agora tem, considerar 100% de crescimento
+			isIncreasing = true
+		} else {
+			growth = 0
+			isIncreasing = false
+		}
+
+		// Arredondar valores para melhor visualização
+		currentRate = math.Round(currentRate*100) / 100
+		growth = math.Round(growth*100) / 100
+
+		// Adicionar ao mapa resultante
+		professionData[profName] = ProfessionConversionData{
+			ProfessionID:   profID,
+			ProfessionName: profName,
+			ConversionRate: currentRate,
+			Growth:         growth,
+			IsIncreasing:   isIncreasing,
+		}
+	}
+
+	// Construir resultado final
+	result := make(map[string]interface{})
+	result["professions"] = professionData
+	result["processing_time_ms"] = time.Since(startTime).Milliseconds()
+	result["queries_executed"] = 4 // Agora são apenas 4 queries em vez de N*4
 
 	return result, nil
 }

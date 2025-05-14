@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"strconv"
 	"time"
 
@@ -18,6 +19,39 @@ func NewSurveyHandler(surveyUseCase *usecases.SurveyUseCase) *SurveyHandler {
 	return &SurveyHandler{
 		surveyUseCase: surveyUseCase,
 	}
+}
+
+// calculateDateParams calcula todos os parâmetros de data a partir de vendas_inicio
+func (h *SurveyHandler) calculateDateParams(vendasInicioStr string) (map[string]time.Time, error) {
+	dateParams := make(map[string]time.Time)
+
+	// Parse vendas_inicio
+	vendasInicio, err := h.surveyUseCase.ParseDateParam(vendasInicioStr)
+	if err != nil {
+		return nil, err
+	}
+
+	// Normalizar para garantir que estamos usando o horário 20:30:00
+	dataBase := time.Date(vendasInicio.Year(), vendasInicio.Month(), vendasInicio.Day(), 0, 0, 0, 0, vendasInicio.Location())
+
+	// 1. vendas_inicio = dataBase às 20:30
+	vendasInicioNorm := time.Date(dataBase.Year(), dataBase.Month(), dataBase.Day(), 20, 30, 0, 0, dataBase.Location())
+	dateParams["venda_inicio"] = vendasInicioNorm
+
+	// 2. vendas_fim = dataBase às 23:59:59
+	vendasFim := time.Date(dataBase.Year(), dataBase.Month(), dataBase.Day(), 23, 59, 59, 999999999, dataBase.Location())
+	dateParams["venda_fim"] = vendasFim
+
+	// 3. pesquisa_fim = dataBase às 20:00
+	pesquisaFim := time.Date(dataBase.Year(), dataBase.Month(), dataBase.Day(), 20, 0, 0, 0, dataBase.Location())
+	dateParams["pesquisa_fim"] = pesquisaFim
+
+	// 4. pesquisa_inicio = dataBase - 7 dias, às 20:00
+	pesquisaInicio := dataBase.AddDate(0, 0, -7)
+	pesquisaInicio = time.Date(pesquisaInicio.Year(), pesquisaInicio.Month(), pesquisaInicio.Day(), 20, 0, 0, 0, pesquisaInicio.Location())
+	dateParams["pesquisa_inicio"] = pesquisaInicio
+
+	return dateParams, nil
 }
 
 // GetSurveys retorna todas as pesquisas com opção de filtros
@@ -73,14 +107,7 @@ func (h *SurveyHandler) GetSurveys(c *fiber.Ctx) error {
 // @Tags surveys
 // @Accept json
 // @Produce json
-// @Param data_inicio query string false "Data de início geral (ISO8601 com timezone)"
-// @Param data_fim query string false "Data de fim geral (ISO8601 com timezone)"
-// @Param lead_inicio query string false "Data de início para leads (ISO8601 com timezone)"
-// @Param lead_fim query string false "Data de fim para leads (ISO8601 com timezone)"
-// @Param pesquisa_inicio query string false "Data de início para respostas de pesquisa (ISO8601 com timezone)"
-// @Param pesquisa_fim query string false "Data de fim para respostas de pesquisa (ISO8601 com timezone)"
 // @Param venda_inicio query string false "Data de início para vendas (ISO8601 com timezone)"
-// @Param venda_fim query string false "Data de fim para vendas (ISO8601 com timezone)"
 // @Param profissao query int false "Filtrar por profissão"
 // @Param funil query int false "Filtrar por funil"
 // @Param pesquisa_id query int false "Filtrar por ID da pesquisa"
@@ -93,94 +120,40 @@ func (h *SurveyHandler) GetSurveyMetrics(c *fiber.Ctx) error {
 	params := make(map[string]interface{})
 
 	// Parâmetros de filtro de data
-	dataInicioStr := c.Query("data_inicio", "")
-	dataFimStr := c.Query("data_fim", "")
-	leadInicioStr := c.Query("lead_inicio", "")
-	leadFimStr := c.Query("lead_fim", "")
-	pesquisaInicioStr := c.Query("pesquisa_inicio", "")
-	pesquisaFimStr := c.Query("pesquisa_fim", "")
 	vendaInicioStr := c.Query("venda_inicio", "")
-	vendaFimStr := c.Query("venda_fim", "")
 
-	// Converter datas para time.Time
-	if dataInicioStr != "" {
-		dataInicio, err := h.surveyUseCase.ParseDateParam(dataInicioStr)
-		if err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "Formato de data inválido para 'data_inicio'. Use ISO8601."})
-		}
-		params["data_inicio"] = dataInicio
-	}
-
-	if dataFimStr != "" {
-		dataFim, err := h.surveyUseCase.ParseDateParam(dataFimStr)
-		if err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "Formato de data inválido para 'data_fim'. Use ISO8601."})
-		}
-		// Ajustar para o final do dia, se for uma data simples
-		if len(dataFimStr) <= 10 {
-			dataFim = time.Date(dataFim.Year(), dataFim.Month(), dataFim.Day(), 23, 59, 59, 999999999, dataFim.Location())
-		}
-		params["data_fim"] = dataFim
-	}
-
-	if leadInicioStr != "" {
-		leadInicio, err := h.surveyUseCase.ParseDateParam(leadInicioStr)
-		if err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "Formato de data inválido para 'lead_inicio'. Use ISO8601."})
-		}
-		params["lead_inicio"] = leadInicio
-	}
-
-	if leadFimStr != "" {
-		leadFim, err := h.surveyUseCase.ParseDateParam(leadFimStr)
-		if err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "Formato de data inválido para 'lead_fim'. Use ISO8601."})
-		}
-		// Ajustar para o final do dia, se for uma data simples
-		if len(leadFimStr) <= 10 {
-			leadFim = time.Date(leadFim.Year(), leadFim.Month(), leadFim.Day(), 23, 59, 59, 999999999, leadFim.Location())
-		}
-		params["lead_fim"] = leadFim
-	}
-
-	if pesquisaInicioStr != "" {
-		pesquisaInicio, err := h.surveyUseCase.ParseDateParam(pesquisaInicioStr)
-		if err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "Formato de data inválido para 'pesquisa_inicio'. Use ISO8601."})
-		}
-		params["pesquisa_inicio"] = pesquisaInicio
-	}
-
-	if pesquisaFimStr != "" {
-		pesquisaFim, err := h.surveyUseCase.ParseDateParam(pesquisaFimStr)
-		if err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "Formato de data inválido para 'pesquisa_fim'. Use ISO8601."})
-		}
-		// Ajustar para o final do dia, se for uma data simples
-		if len(pesquisaFimStr) <= 10 {
-			pesquisaFim = time.Date(pesquisaFim.Year(), pesquisaFim.Month(), pesquisaFim.Day(), 23, 59, 59, 999999999, pesquisaFim.Location())
-		}
-		params["pesquisa_fim"] = pesquisaFim
-	}
-
+	// Se data de venda_inicio fornecida, calcular todos os parâmetros de data
 	if vendaInicioStr != "" {
-		vendaInicio, err := h.surveyUseCase.ParseDateParam(vendaInicioStr)
+		dateParams, err := h.calculateDateParams(vendaInicioStr)
 		if err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": "Formato de data inválido para 'venda_inicio'. Use ISO8601."})
 		}
-		params["venda_inicio"] = vendaInicio
-	}
 
-	if vendaFimStr != "" {
-		vendaFim, err := h.surveyUseCase.ParseDateParam(vendaFimStr)
+		// Adicionar todos os parâmetros de data ao mapa de parâmetros
+		for key, value := range dateParams {
+			params[key] = value
+		}
+	} else {
+		// Se nenhuma data foi fornecida, use a terça-feira atual ou a terça-feira anterior
+		dataEscolhida := time.Now()
+		// Ajustar para a terça-feira atual ou anterior
+		for dataEscolhida.Weekday() != time.Tuesday {
+			dataEscolhida = dataEscolhida.AddDate(0, 0, -1)
+		}
+
+		// Formatar como string ISO8601
+		vendaInicioStr = time.Date(dataEscolhida.Year(), dataEscolhida.Month(), dataEscolhida.Day(), 20, 30, 0, 0, dataEscolhida.Location()).Format(time.RFC3339)
+
+		// Calcular parâmetros de data
+		dateParams, err := h.calculateDateParams(vendaInicioStr)
 		if err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "Formato de data inválido para 'venda_fim'. Use ISO8601."})
+			return c.Status(500).JSON(fiber.Map{"error": "Erro ao calcular datas padrão"})
 		}
-		// Ajustar para o final do dia, se for uma data simples
-		if len(vendaFimStr) <= 10 {
-			vendaFim = time.Date(vendaFim.Year(), vendaFim.Month(), vendaFim.Day(), 23, 59, 59, 999999999, vendaFim.Location())
+
+		// Adicionar todos os parâmetros de data ao mapa de parâmetros
+		for key, value := range dateParams {
+			params[key] = value
 		}
-		params["venda_fim"] = vendaFim
 	}
 
 	// Outros filtros
@@ -216,12 +189,7 @@ func (h *SurveyHandler) GetSurveyMetrics(c *fiber.Ctx) error {
 // @Accept json
 // @Produce json
 // @Param id path int true "ID da pesquisa"
-// @Param data_inicio query string false "Data de início geral (ISO8601 com timezone)"
-// @Param data_fim query string false "Data de fim geral (ISO8601 com timezone)"
-// @Param pesquisa_inicio query string false "Data de início para respostas de pesquisa (ISO8601 com timezone)"
-// @Param pesquisa_fim query string false "Data de fim para respostas de pesquisa (ISO8601 com timezone)"
 // @Param venda_inicio query string false "Data de início para vendas (ISO8601 com timezone)"
-// @Param venda_fim query string false "Data de fim para vendas (ISO8601 com timezone)"
 // @Success 200 {object} []map[string]interface{} "Detalhes da pesquisa"
 // @Failure 400 {object} map[string]interface{} "Erro de parâmetros"
 // @Failure 404 {object} map[string]interface{} "Pesquisa não encontrada"
@@ -237,74 +205,48 @@ func (h *SurveyHandler) GetSurveyDetails(c *fiber.Ctx) error {
 	// Obter parâmetros e filtros
 	params := make(map[string]interface{})
 
-	// Parâmetros de filtro de data
-	dataInicioStr := c.Query("data_inicio", "")
-	dataFimStr := c.Query("data_fim", "")
-	pesquisaInicioStr := c.Query("pesquisa_inicio", "")
-	pesquisaFimStr := c.Query("pesquisa_fim", "")
+	// Adicionar o surveyID aos parâmetros
+	params["pesquisa_id"] = surveyID
+
+	// Parâmetros de filtro de data - usar a mesma lógica que GetSurveyMetrics
 	vendaInicioStr := c.Query("venda_inicio", "")
-	vendaFimStr := c.Query("venda_fim", "")
 
-	// Converter datas para time.Time
-	if dataInicioStr != "" {
-		dataInicio, err := h.surveyUseCase.ParseDateParam(dataInicioStr)
-		if err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "Formato de data inválido para 'data_inicio'. Use ISO8601."})
-		}
-		params["data_inicio"] = dataInicio
-	}
-
-	if dataFimStr != "" {
-		dataFim, err := h.surveyUseCase.ParseDateParam(dataFimStr)
-		if err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "Formato de data inválido para 'data_fim'. Use ISO8601."})
-		}
-		// Ajustar para o final do dia, se for uma data simples
-		if len(dataFimStr) <= 10 {
-			dataFim = time.Date(dataFim.Year(), dataFim.Month(), dataFim.Day(), 23, 59, 59, 999999999, dataFim.Location())
-		}
-		params["data_fim"] = dataFim
-	}
-
-	if pesquisaInicioStr != "" {
-		pesquisaInicio, err := h.surveyUseCase.ParseDateParam(pesquisaInicioStr)
-		if err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "Formato de data inválido para 'pesquisa_inicio'. Use ISO8601."})
-		}
-		params["pesquisa_inicio"] = pesquisaInicio
-	}
-
-	if pesquisaFimStr != "" {
-		pesquisaFim, err := h.surveyUseCase.ParseDateParam(pesquisaFimStr)
-		if err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "Formato de data inválido para 'pesquisa_fim'. Use ISO8601."})
-		}
-		// Ajustar para o final do dia, se for uma data simples
-		if len(pesquisaFimStr) <= 10 {
-			pesquisaFim = time.Date(pesquisaFim.Year(), pesquisaFim.Month(), pesquisaFim.Day(), 23, 59, 59, 999999999, pesquisaFim.Location())
-		}
-		params["pesquisa_fim"] = pesquisaFim
-	}
-
+	// Se data de venda_inicio fornecida, calcular todos os parâmetros de data
 	if vendaInicioStr != "" {
-		vendaInicio, err := h.surveyUseCase.ParseDateParam(vendaInicioStr)
+		dateParams, err := h.calculateDateParams(vendaInicioStr)
 		if err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": "Formato de data inválido para 'venda_inicio'. Use ISO8601."})
 		}
-		params["venda_inicio"] = vendaInicio
+
+		// Adicionar todos os parâmetros de data ao mapa de parâmetros
+		for key, value := range dateParams {
+			params[key] = value
+		}
+	} else {
+		// Se nenhuma data foi fornecida, use a terça-feira atual ou a terça-feira anterior
+		dataEscolhida := time.Now()
+		// Ajustar para a terça-feira atual ou anterior
+		for dataEscolhida.Weekday() != time.Tuesday {
+			dataEscolhida = dataEscolhida.AddDate(0, 0, -1)
+		}
+
+		// Formatar como string ISO8601
+		vendaInicioStr = time.Date(dataEscolhida.Year(), dataEscolhida.Month(), dataEscolhida.Day(), 20, 30, 0, 0, dataEscolhida.Location()).Format(time.RFC3339)
+
+		// Calcular parâmetros de data
+		dateParams, err := h.calculateDateParams(vendaInicioStr)
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Erro ao calcular datas padrão"})
+		}
+
+		// Adicionar todos os parâmetros de data ao mapa de parâmetros
+		for key, value := range dateParams {
+			params[key] = value
+		}
 	}
 
-	if vendaFimStr != "" {
-		vendaFim, err := h.surveyUseCase.ParseDateParam(vendaFimStr)
-		if err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "Formato de data inválido para 'venda_fim'. Use ISO8601."})
-		}
-		// Ajustar para o final do dia, se for uma data simples
-		if len(vendaFimStr) <= 10 {
-			vendaFim = time.Date(vendaFim.Year(), vendaFim.Month(), vendaFim.Day(), 23, 59, 59, 999999999, vendaFim.Location())
-		}
-		params["venda_fim"] = vendaFim
-	}
+	// Log dos parâmetros para debug
+	fmt.Printf("GetSurveyDetails - Survey ID: %d, Parameters: %+v\n", surveyID, params)
 
 	// Buscar detalhes da pesquisa
 	details, err := h.surveyUseCase.GetSurveyDetails(surveyID, params)
@@ -313,7 +255,29 @@ func (h *SurveyHandler) GetSurveyDetails(c *fiber.Ctx) error {
 		if err.Error() == "pesquisa não encontrada: record not found" {
 			return c.Status(404).JSON(fiber.Map{"error": "Pesquisa não encontrada"})
 		}
-		return c.Status(500).JSON(fiber.Map{"error": "Erro ao buscar detalhes da pesquisa: " + err.Error()})
+
+		// Registrar o erro no log para investigação
+		fmt.Printf("ERRO ao buscar detalhes da pesquisa ID %d: %v\n", surveyID, err)
+
+		// Formatar uma mensagem de erro mais amigável para o usuário
+		errorMessage := fmt.Sprintf("Erro ao buscar detalhes da pesquisa: %s", err.Error())
+		return c.Status(500).JSON(fiber.Map{
+			"error":     errorMessage,
+			"survey_id": surveyID,
+		})
+	}
+
+	// Verificar se recebemos resultados
+	detailsArray, ok := details.([]map[string]interface{})
+	if !ok || len(detailsArray) == 0 {
+		// Retornar uma resposta vazia, mas não um erro
+		return c.JSON([]map[string]interface{}{
+			{
+				"pergunta_id":    "no_data",
+				"texto_pergunta": "Nenhuma resposta encontrada para o período selecionado",
+				"respostas":      []map[string]interface{}{},
+			},
+		})
 	}
 
 	// Retornar resposta

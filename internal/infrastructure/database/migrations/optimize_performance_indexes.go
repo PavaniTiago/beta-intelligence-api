@@ -49,6 +49,20 @@ func OptimizePerformanceIndexes(db *gorm.DB) error {
 		return err
 	}
 
+	// Adicionar índices para otimização da consulta de conversão por profissão
+	indexes := []string{
+		// Índices para a rota de conversão por profissão
+		"CREATE INDEX IF NOT EXISTS idx_sessions_profession_started_landing ON sessions (profession_id, \"sessionStart\", \"landingPage\")",
+		"CREATE INDEX IF NOT EXISTS idx_events_profession_time_type ON events (profession_id, event_time, event_type)",
+	}
+
+	// Executar cada índice
+	for _, idx := range indexes {
+		if err := db.Exec(idx).Error; err != nil {
+			return err
+		}
+	}
+
 	log.Println("Índices de performance criados com sucesso!")
 	return nil
 }

@@ -264,3 +264,115 @@ func calculatePreviousPeriod(from, to time.Time, timeFrame string) (time.Time, t
 		return from.Add(-duration), to.Add(-duration)
 	}
 }
+
+// GetProfessionConversionRates retorna taxas de conversão para todas as profissões
+// @Summary Retorna taxas de conversão para todas as profissões
+// @Description Retorna dados de conversão (leads/sessões) para todas as profissões, comparando o dia atual com o dia anterior
+// @Tags dashboard
+// @Accept  json
+// @Produce  json
+// @Param from query string false "Data inicial (formato: 2023-01-01)"
+// @Param to query string false "Data final (formato: 2023-01-31)"
+// @Param timeFrom query string false "Hora inicial (formato: 08:00)"
+// @Param timeTo query string false "Hora final (formato: 18:00)"
+// @Success 200 {object} map[string]interface{} "Dados de conversão por profissão"
+// @Failure 400 {object} map[string]string "Erro de validação"
+// @Failure 500 {object} map[string]string "Erro interno"
+// @Router /dashboard/profession-conversion [get]
+func (h *DashboardHandler) GetProfessionConversionRates(c *fiber.Ctx) error {
+	// Obter parâmetros de filtro
+	fromStr := c.Query("from", "")
+	toStr := c.Query("to", "")
+	timeFrom := c.Query("timeFrom", "")
+	timeTo := c.Query("timeTo", "")
+
+	// Definir período atual e anterior
+	var currentPeriod, previousPeriod usecases.DatePeriod
+	var err error
+
+	// Se não forem fornecidas datas, usar dia atual comparado com o dia anterior
+	if fromStr == "" || toStr == "" {
+		// Dia atual
+		now := time.Now()
+		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+		hourStr := fmt.Sprintf("%02d:%02d", now.Hour(), now.Minute())
+
+		// Dia atual até hora atual
+		currentPeriod = usecases.DatePeriod{
+			From:     today,
+			To:       today,
+			TimeFrom: "00:00",
+			TimeTo:   hourStr,
+		}
+
+		// Dia anterior até mesma hora
+		yesterday := today.AddDate(0, 0, -1)
+		previousPeriod = usecases.DatePeriod{
+			From:     yesterday,
+			To:       yesterday,
+			TimeFrom: "00:00",
+			TimeTo:   hourStr,
+		}
+	} else {
+		// Converter strings para time.Time
+		fromTime, err := time.Parse("2006-01-02", fromStr)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Formato de data inválido. Use: YYYY-MM-DD",
+			})
+		}
+
+		toTime, err := time.Parse("2006-01-02", toStr)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Formato de data inválido. Use: YYYY-MM-DD",
+			})
+		}
+
+		// Usar período definido pelo usuário
+		currentPeriod = usecases.DatePeriod{
+			From:     fromTime,
+			To:       toTime,
+			TimeFrom: timeFrom,
+			TimeTo:   timeTo,
+		}
+
+		// Calcular período anterior com mesmo tamanho
+		duration := toTime.Sub(fromTime)
+		previousFrom := fromTime.Add(-duration - 24*time.Hour)
+		previousTo := toTime.Add(-duration - 24*time.Hour)
+
+		previousPeriod = usecases.DatePeriod{
+			From:     previousFrom,
+			To:       previousTo,
+			TimeFrom: timeFrom,
+			TimeTo:   timeTo,
+		}
+	}
+
+	// Obter taxas de conversão por profissão
+	conversionRates, err := h.dashboardUseCase.GetProfessionConversionRates(currentPeriod, previousPeriod)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": fmt.Sprintf("Erro ao obter taxas de conversão: %s", err.Error()),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"data": conversionRates,
+		"meta": fiber.Map{
+			"currentPeriod": fiber.Map{
+				"from":     currentPeriod.From.Format("2006-01-02"),
+				"to":       currentPeriod.To.Format("2006-01-02"),
+				"timeFrom": currentPeriod.TimeFrom,
+				"timeTo":   currentPeriod.TimeTo,
+			},
+			"previousPeriod": fiber.Map{
+				"from":     previousPeriod.From.Format("2006-01-02"),
+				"to":       previousPeriod.To.Format("2006-01-02"),
+				"timeFrom": previousPeriod.TimeFrom,
+				"timeTo":   previousPeriod.TimeTo,
+			},
+		},
+	})
+}
