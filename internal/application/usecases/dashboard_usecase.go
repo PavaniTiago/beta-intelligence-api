@@ -1036,11 +1036,21 @@ func (uc *dashboardUseCase) obterDadosComparacao(
 
 // ProfessionConversionData representa os dados de conversão para uma profissão
 type ProfessionConversionData struct {
-	ProfessionID   int     `json:"profession_id"`
-	ProfessionName string  `json:"profession_name"`
+	ProfessionID   int                   `json:"profession_id"`
+	ProfessionName string                `json:"profession_name"`
+	ConversionRate float64               `json:"conversion_rate"`
+	PreviousRate   float64               `json:"previous_rate"`
+	Growth         float64               `json:"growth"`
+	IsIncreasing   bool                  `json:"is_increasing"`
+	IsActive       bool                  `json:"is_active"`
+	ActiveFunnels  []ActiveFunnelDetails `json:"active_funnels,omitempty"`
+}
+
+// ActiveFunnelDetails representa os detalhes de um funil ativo
+type ActiveFunnelDetails struct {
+	FunnelID       int     `json:"funnel_id"`
+	FunnelName     string  `json:"funnel_name"`
 	ConversionRate float64 `json:"conversion_rate"`
-	Growth         float64 `json:"growth"`
-	IsIncreasing   bool    `json:"is_increasing"`
 }
 
 // Estruturas para agregação de dados por profissão
@@ -1085,111 +1095,265 @@ func (uc *dashboardUseCase) GetProfessionConversionRates(
 		professionMap[p.ProfessionID] = p.ProfessionName
 	}
 
-	// 1. QUERY OTIMIZADA: Contagem de sessões para o período atual agrupadas por profissão
-	var sessionsCurrentPeriod []SessionAggregate
-	sessionsCurrentQuery := `
-		SELECT profession_id, COUNT(*) as count
-		FROM sessions
-		WHERE "landingPage" = ?
-		AND ("sessionStart" AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?
+	// Consultar funis ativos por profissão para verificar se todos os funis estão inativos
+	activeFunnelsQuery := `
+		WITH funnels_by_profession AS (
+			SELECT 
+				prof.profession_id,
+				prof.profession_name,
+				f.funnel_id,
+				f.is_active
+			FROM professions prof
+			JOIN products p ON prof.profession_id = p.profession_id
+			JOIN funnels f ON p.product_id = f.product_id
+			WHERE (f.is_testing = false OR f.is_testing IS NULL)
+		)
+		SELECT 
+			profession_id,
+			CASE 
+				WHEN COUNT(funnel_id) > 0 AND SUM(CASE WHEN is_active = true THEN 1 ELSE 0 END) = 0 THEN false
+				ELSE true
+			END AS has_any_active_funnels
+		FROM funnels_by_profession
 		GROUP BY profession_id
 	`
 
-	// Formatar as datas para o formato do PostgreSQL
-	currentFromStr := currentPeriod.From.Format("2006-01-02")
-	currentToStr := currentPeriod.To.Format("2006-01-02")
+	// Obter detalhes de cada funil ativo com taxa de conversão
+	funnelDetailsQuery := fmt.Sprintf(`
+		WITH date_params AS (
+			SELECT 
+				TIMESTAMP '%s' as from_date,
+				TIMESTAMP '%s' as to_date
+		),
+		funnel_sessions AS (
+			SELECT 
+				f.funnel_id,
+				f.funnel_name,
+				p.profession_id,
+				COUNT(*) as session_count
+			FROM funnels f
+			JOIN products p ON f.product_id = p.product_id
+			LEFT JOIN sessions s ON f.funnel_id = s.funnel_id
+			WHERE f.is_active = true
+			AND (f.is_testing = false OR f.is_testing IS NULL)
+			AND s."sessionStart" IS NOT NULL
+			AND (s."sessionStart" AT TIME ZONE 'America/Sao_Paulo') 
+				BETWEEN (SELECT from_date FROM date_params) AND (SELECT to_date FROM date_params)
+			GROUP BY f.funnel_id, f.funnel_name, p.profession_id
+		),
+		funnel_leads AS (
+			SELECT 
+				f.funnel_id,
+				COUNT(*) as lead_count
+			FROM funnels f
+			JOIN events e ON f.funnel_id = e.funnel_id
+			WHERE f.is_active = true
+			AND (f.is_testing = false OR f.is_testing IS NULL)
+			AND e.event_type = 'LEAD'
+			AND (e.event_time AT TIME ZONE 'America/Sao_Paulo') 
+				BETWEEN (SELECT from_date FROM date_params) AND (SELECT to_date FROM date_params)
+			GROUP BY f.funnel_id
+		)
+		SELECT 
+			fs.funnel_id,
+			fs.funnel_name,
+			fs.profession_id,
+			fs.session_count,
+			COALESCE(fl.lead_count, 0) as lead_count,
+			CASE 
+				WHEN fs.session_count > 0 
+				THEN (ROUND((COALESCE(fl.lead_count, 0)::float / fs.session_count::float) * 100))::numeric(10,2)
+				ELSE 0 
+			END as conversion_rate
+		FROM funnel_sessions fs
+		LEFT JOIN funnel_leads fl ON fs.funnel_id = fl.funnel_id
+		ORDER BY fs.profession_id, conversion_rate DESC
+	`, currentPeriod.From.Format("2006-01-02 15:04:05"), currentPeriod.To.Format("2006-01-02 15:04:05"))
 
-	// Ajustar hora e minuto se timeFrom fornecido
+	type ActiveFunnelResult struct {
+		ProfessionID        int  `gorm:"column:profession_id"`
+		HasAnyActiveFunnels bool `gorm:"column:has_any_active_funnels"`
+	}
+
+	var activeFunnelsResults []ActiveFunnelResult
+	if err := uc.db.Raw(activeFunnelsQuery).Scan(&activeFunnelsResults).Error; err != nil {
+		return nil, fmt.Errorf("erro ao verificar funis ativos: %w", err)
+	}
+
+	// Criar mapa para facilitar o acesso à informação de funis ativos
+	professionToActiveFunnels := make(map[int]bool)
+	for _, result := range activeFunnelsResults {
+		professionToActiveFunnels[result.ProfessionID] = result.HasAnyActiveFunnels
+	}
+
+	// 1. QUERY OTIMIZADA: Contagem de sessões para o período atual agrupadas por profissão
+	var sessionsCurrentPeriod []SessionAggregate
+
+	// Formatar datas diretamente para timestamp com timezone
+	var currentFromTime, currentToTime string
 	if currentPeriod.TimeFrom != "" {
-		currentFromStr = fmt.Sprintf("%s %s:00", currentFromStr, currentPeriod.TimeFrom)
+		currentFromTime = currentPeriod.TimeFrom + ":00"
 	} else {
-		currentFromStr = fmt.Sprintf("%s 00:00:00", currentFromStr)
+		currentFromTime = "00:00:00"
 	}
 
-	// Ajustar hora e minuto se timeTo fornecido
 	if currentPeriod.TimeTo != "" {
-		currentToStr = fmt.Sprintf("%s %s:59", currentToStr, currentPeriod.TimeTo)
+		currentToTime = currentPeriod.TimeTo + ":59"
 	} else {
-		currentToStr = fmt.Sprintf("%s 23:59:59", currentToStr)
+		currentToTime = "23:59:59"
 	}
 
-	if err := uc.db.Raw(sessionsCurrentQuery,
-		"lp.vagasjustica.com.br",
-		currentFromStr,
-		currentToStr,
-	).Scan(&sessionsCurrentPeriod).Error; err != nil {
+	currentFromTimestamp := fmt.Sprintf("%s %s",
+		currentPeriod.From.Format("2006-01-02"),
+		currentFromTime)
+
+	currentToTimestamp := fmt.Sprintf("%s %s",
+		currentPeriod.To.Format("2006-01-02"),
+		currentToTime)
+
+	// Executar consulta de sessões atuais
+	sessionsCurrentSQL := fmt.Sprintf(`
+		SELECT profession_id, COUNT(*) as count
+		FROM sessions
+		WHERE "landingPage" = 'lp.vagasjustica.com.br'
+		AND ("sessionStart" AT TIME ZONE 'America/Sao_Paulo')
+		    BETWEEN TIMESTAMP '%s' AND TIMESTAMP '%s'
+		GROUP BY profession_id`,
+		currentFromTimestamp,
+		currentToTimestamp)
+
+	if err := uc.db.Raw(sessionsCurrentSQL).Scan(&sessionsCurrentPeriod).Error; err != nil {
 		return nil, fmt.Errorf("erro ao buscar sessões do período atual: %w", err)
 	}
 
 	// 2. QUERY OTIMIZADA: Contagem de sessões para o período anterior agrupadas por profissão
 	var sessionsPreviousPeriod []SessionAggregate
-	sessionsPreviousQuery := `
+
+	// Formatar datas para período anterior
+	var previousFromTime, previousToTime string
+	if previousPeriod.TimeFrom != "" {
+		previousFromTime = previousPeriod.TimeFrom + ":00"
+	} else {
+		previousFromTime = "00:00:00"
+	}
+
+	if previousPeriod.TimeTo != "" {
+		previousToTime = previousPeriod.TimeTo + ":59"
+	} else {
+		previousToTime = "23:59:59"
+	}
+
+	previousFromTimestamp := fmt.Sprintf("%s %s",
+		previousPeriod.From.Format("2006-01-02"),
+		previousFromTime)
+
+	previousToTimestamp := fmt.Sprintf("%s %s",
+		previousPeriod.To.Format("2006-01-02"),
+		previousToTime)
+
+	// Executar consulta de sessões anteriores
+	sessionsPreviousSQL := fmt.Sprintf(`
 		SELECT profession_id, COUNT(*) as count
 		FROM sessions
-		WHERE "landingPage" = ?
-		AND ("sessionStart" AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?
-		GROUP BY profession_id
-	`
+		WHERE "landingPage" = 'lp.vagasjustica.com.br'
+		AND ("sessionStart" AT TIME ZONE 'America/Sao_Paulo')
+		    BETWEEN TIMESTAMP '%s' AND TIMESTAMP '%s'
+		GROUP BY profession_id`,
+		previousFromTimestamp,
+		previousToTimestamp)
 
-	// Formatar as datas para o formato do PostgreSQL
-	previousFromStr := previousPeriod.From.Format("2006-01-02")
-	previousToStr := previousPeriod.To.Format("2006-01-02")
-
-	// Ajustar hora e minuto se timeFrom fornecido
-	if previousPeriod.TimeFrom != "" {
-		previousFromStr = fmt.Sprintf("%s %s:00", previousFromStr, previousPeriod.TimeFrom)
-	} else {
-		previousFromStr = fmt.Sprintf("%s 00:00:00", previousFromStr)
-	}
-
-	// Ajustar hora e minuto se timeTo fornecido
-	if previousPeriod.TimeTo != "" {
-		previousToStr = fmt.Sprintf("%s %s:59", previousToStr, previousPeriod.TimeTo)
-	} else {
-		previousToStr = fmt.Sprintf("%s 23:59:59", previousToStr)
-	}
-
-	if err := uc.db.Raw(sessionsPreviousQuery,
-		"lp.vagasjustica.com.br",
-		previousFromStr,
-		previousToStr,
-	).Scan(&sessionsPreviousPeriod).Error; err != nil {
+	if err := uc.db.Raw(sessionsPreviousSQL).Scan(&sessionsPreviousPeriod).Error; err != nil {
 		return nil, fmt.Errorf("erro ao buscar sessões do período anterior: %w", err)
 	}
 
 	// 3. QUERY OTIMIZADA: Contagem de leads para o período atual agrupadas por profissão
 	var leadsCurrentPeriod []LeadAggregate
-	leadsCurrentQuery := `
+
+	// Executar consulta de leads atuais
+	leadsCurrentSQL := fmt.Sprintf(`
 		SELECT profession_id, COUNT(*) as count
 		FROM events
 		WHERE event_type = 'LEAD'
-		AND (event_time AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?
-		GROUP BY profession_id
-	`
+		AND (event_time AT TIME ZONE 'America/Sao_Paulo')
+		    BETWEEN TIMESTAMP '%s' AND TIMESTAMP '%s'
+		GROUP BY profession_id`,
+		currentFromTimestamp,
+		currentToTimestamp)
 
-	if err := uc.db.Raw(leadsCurrentQuery,
-		currentFromStr,
-		currentToStr,
-	).Scan(&leadsCurrentPeriod).Error; err != nil {
+	if err := uc.db.Raw(leadsCurrentSQL).Scan(&leadsCurrentPeriod).Error; err != nil {
 		return nil, fmt.Errorf("erro ao buscar leads do período atual: %w", err)
 	}
 
 	// 4. QUERY OTIMIZADA: Contagem de leads para o período anterior agrupadas por profissão
 	var leadsPreviousPeriod []LeadAggregate
-	leadsPreviousQuery := `
+
+	// Executar consulta de leads anteriores
+	leadsPreviousSQL := fmt.Sprintf(`
 		SELECT profession_id, COUNT(*) as count
 		FROM events
 		WHERE event_type = 'LEAD'
-		AND (event_time AT TIME ZONE 'America/Sao_Paulo') BETWEEN ? AND ?
-		GROUP BY profession_id
-	`
+		AND (event_time AT TIME ZONE 'America/Sao_Paulo')
+		    BETWEEN TIMESTAMP '%s' AND TIMESTAMP '%s'
+		GROUP BY profession_id`,
+		previousFromTimestamp,
+		previousToTimestamp)
 
-	if err := uc.db.Raw(leadsPreviousQuery,
-		previousFromStr,
-		previousToStr,
-	).Scan(&leadsPreviousPeriod).Error; err != nil {
+	if err := uc.db.Raw(leadsPreviousSQL).Scan(&leadsPreviousPeriod).Error; err != nil {
 		return nil, fmt.Errorf("erro ao buscar leads do período anterior: %w", err)
 	}
+
+	// Agora que temos os detalhes dos funis ativos, podemos completar a consulta
+	// Verificar se as datas usadas na query de funis são as mesmas
+	funnelDetailsQuery = fmt.Sprintf(`
+		WITH date_params AS (
+			SELECT 
+				TIMESTAMP '%s' as from_date,
+				TIMESTAMP '%s' as to_date
+		),
+		funnel_sessions AS (
+			SELECT 
+				f.funnel_id,
+				f.funnel_name,
+				p.profession_id,
+				COUNT(*) as session_count
+			FROM funnels f
+			JOIN products p ON f.product_id = p.product_id
+			LEFT JOIN sessions s ON f.funnel_id = s.funnel_id
+			WHERE f.is_active = true
+			AND (f.is_testing = false OR f.is_testing IS NULL)
+			AND s."sessionStart" IS NOT NULL
+			AND (s."sessionStart" AT TIME ZONE 'America/Sao_Paulo') 
+				BETWEEN (SELECT from_date FROM date_params) AND (SELECT to_date FROM date_params)
+			GROUP BY f.funnel_id, f.funnel_name, p.profession_id
+		),
+		funnel_leads AS (
+			SELECT 
+				f.funnel_id,
+				COUNT(*) as lead_count
+			FROM funnels f
+			JOIN events e ON f.funnel_id = e.funnel_id
+			WHERE f.is_active = true
+			AND (f.is_testing = false OR f.is_testing IS NULL)
+			AND e.event_type = 'LEAD'
+			AND (e.event_time AT TIME ZONE 'America/Sao_Paulo') 
+				BETWEEN (SELECT from_date FROM date_params) AND (SELECT to_date FROM date_params)
+			GROUP BY f.funnel_id
+		)
+		SELECT 
+			fs.funnel_id,
+			fs.funnel_name,
+			fs.profession_id,
+			fs.session_count,
+			COALESCE(fl.lead_count, 0) as lead_count,
+			CASE 
+				WHEN fs.session_count > 0 
+				THEN (ROUND((COALESCE(fl.lead_count, 0)::float / fs.session_count::float) * 100))::numeric(10,2)
+				ELSE 0 
+			END as conversion_rate
+		FROM funnel_sessions fs
+		LEFT JOIN funnel_leads fl ON fs.funnel_id = fl.funnel_id
+		ORDER BY fs.profession_id, conversion_rate DESC
+	`, currentFromTimestamp, currentToTimestamp)
 
 	// Mapear os resultados das queries para mapas em memória
 	currentSessionsByProfession := make(map[int]int64)
@@ -1210,6 +1374,40 @@ func (uc *dashboardUseCase) GetProfessionConversionRates(
 	previousLeadsByProfession := make(map[int]int64)
 	for _, l := range leadsPreviousPeriod {
 		previousLeadsByProfession[l.ProfessionID] = l.Count
+	}
+
+	// Buscar detalhes dos funis
+	type FunnelDetail struct {
+		FunnelID       int     `gorm:"column:funnel_id"`
+		FunnelName     string  `gorm:"column:funnel_name"`
+		ProfessionID   int     `gorm:"column:profession_id"`
+		SessionCount   int64   `gorm:"column:session_count"`
+		LeadCount      int64   `gorm:"column:lead_count"`
+		ConversionRate float64 `gorm:"column:conversion_rate"`
+	}
+
+	var funnelDetails []FunnelDetail
+	if err := uc.db.Raw(funnelDetailsQuery).Scan(&funnelDetails).Error; err != nil {
+		return nil, fmt.Errorf("erro ao buscar detalhes dos funis: %w", err)
+	}
+
+	// Criar mapa para agrupar funis por profissão
+	professionToFunnels := make(map[int][]ActiveFunnelDetails)
+	for _, detail := range funnelDetails {
+		funnelDetail := ActiveFunnelDetails{
+			FunnelID:       detail.FunnelID,
+			FunnelName:     detail.FunnelName,
+			ConversionRate: detail.ConversionRate,
+		}
+
+		if _, exists := professionToFunnels[detail.ProfessionID]; !exists {
+			professionToFunnels[detail.ProfessionID] = []ActiveFunnelDetails{}
+		}
+
+		professionToFunnels[detail.ProfessionID] = append(
+			professionToFunnels[detail.ProfessionID],
+			funnelDetail,
+		)
 	}
 
 	// Processar e calcular resultados
@@ -1252,15 +1450,19 @@ func (uc *dashboardUseCase) GetProfessionConversionRates(
 
 		// Arredondar valores para melhor visualização
 		currentRate = math.Round(currentRate*100) / 100
+		previousRate = math.Round(previousRate*100) / 100
 		growth = math.Round(growth*100) / 100
 
-		// Adicionar ao mapa resultante
+		// Adicionar ao mapa resultante, incluindo agora o status de funnels ativos
 		professionData[profName] = ProfessionConversionData{
 			ProfessionID:   profID,
 			ProfessionName: profName,
 			ConversionRate: currentRate,
+			PreviousRate:   previousRate,
 			Growth:         growth,
 			IsIncreasing:   isIncreasing,
+			IsActive:       professionToActiveFunnels[profID],
+			ActiveFunnels:  professionToFunnels[profID],
 		}
 	}
 
@@ -1268,7 +1470,23 @@ func (uc *dashboardUseCase) GetProfessionConversionRates(
 	result := make(map[string]interface{})
 	result["professions"] = professionData
 	result["processing_time_ms"] = time.Since(startTime).Milliseconds()
-	result["queries_executed"] = 4 // Agora são apenas 4 queries em vez de N*4
+	result["queries_executed"] = 6 // Agora são 6 queries (adicionamos a consulta de funis ativos e detalhes de conversão)
+
+	// Adicionar metadados sobre os funis
+	funnelCounts := make(map[string]interface{})
+	totalActiveFunnels := 0
+	professionsWithFunnels := 0
+
+	for _, funnels := range professionToFunnels {
+		if len(funnels) > 0 {
+			professionsWithFunnels++
+		}
+		totalActiveFunnels += len(funnels)
+	}
+
+	funnelCounts["total_active_funnels"] = totalActiveFunnels
+	funnelCounts["professions_with_funnels"] = professionsWithFunnels
+	result["funnel_stats"] = funnelCounts
 
 	return result, nil
 }
