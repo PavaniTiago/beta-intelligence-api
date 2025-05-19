@@ -448,91 +448,100 @@ WITH parametros AS (
         %s AT TIME ZONE 'America/Sao_Paulo' AS pesquisa_inicio,
         %s AT TIME ZONE 'America/Sao_Paulo' AS pesquisa_fim,
         %s AT TIME ZONE 'America/Sao_Paulo' AS venda_inicio,
-        %s AT TIME ZONE 'America/Sao_Paulo' AS venda_fim
+        %s AT TIME ZONE 'America/Sao_Paulo' AS venda_fim,
+        %d AS funnel_id,
+        NULL::text AS filtro_pergunta
 ),
 
--- Identificar usuários que compraram no período especificado
+-- Usuários que compraram no período e passaram por pesquisa
 compradores AS (
     SELECT DISTINCT
         v.user_id
     FROM
         events v
     WHERE
-        v.funnel_id = (SELECT funnel_id FROM surveys WHERE survey_id = %d)
+        v.funnel_id = (SELECT funnel_id FROM parametros)
         AND v.event_type = 'PURCHASE'
         AND v.event_time BETWEEN (SELECT venda_inicio FROM parametros) AND (SELECT venda_fim FROM parametros)
+        AND v.event_propeties->>'product_type' = 'main'
         AND EXISTS (
             SELECT 1
             FROM events pesq
             WHERE pesq.user_id = v.user_id
-            AND pesq.event_type = 'PESQUISA_LEAD'
+              AND pesq.event_type = 'PESQUISA_LEAD'
         )
 ),
 
--- Mapeamento direto de cada comprador para sua resposta na pesquisa
+-- Última resposta de cada comprador para a pergunta (evita CROSS JOIN LATERAL)
 respostas_compradores AS (
     SELECT
         c.user_id,
-        sa.question_id,
-        sa.question_text,
-        sa.value AS resposta,
-        sa.score
-    FROM
-        compradores c
-        CROSS JOIN LATERAL (
-            SELECT 
-                sa.question_id,
-                sa.question_text,
-                sa.value,
-                sa.score,
-                e.event_time
-            FROM 
-                events e
-                JOIN survey_responses sr ON sr.event_id = e.event_id
-                JOIN survey_answers sa ON sa.survey_response_id = sr.id
-            WHERE 
-                e.user_id = c.user_id
-                AND e.event_type = 'PESQUISA_LEAD'
-                AND sr.survey_id = %d
-            ORDER BY 
-                e.event_time DESC
-            LIMIT 1
-        ) sa
+        sub.question_id,
+        sub.question_text,
+        sub.resposta,
+        sub.score
+    FROM compradores c
+    JOIN (
+        SELECT
+            sa.question_id,
+            sa.question_text,
+            sa.value AS resposta,
+            sa.score,
+            e.user_id,
+            ROW_NUMBER() OVER (PARTITION BY e.user_id, sa.question_id ORDER BY e.event_time DESC) AS rn
+        FROM
+            events e
+        JOIN survey_responses sr ON sr.event_id = e.event_id
+        JOIN survey_answers sa ON sa.survey_response_id = sr.id
+        WHERE
+            e.event_type = 'PESQUISA_LEAD'
+            AND sr.survey_id = %d
+            AND (
+                sa.question_id = (SELECT filtro_pergunta FROM parametros)
+                OR (SELECT filtro_pergunta FROM parametros) IS NULL
+            )
+    ) sub ON sub.user_id = c.user_id AND sub.rn = 1
 ),
 
--- Todas as respostas de pesquisa no período especificado
+-- Todas as respostas no período da pesquisa
 todas_respostas AS (
     SELECT
         sa.question_id,
         sa.question_text,
         sa.value AS resposta,
         sa.score,
+        sa.time_to_answer,
         e.user_id
     FROM
         survey_answers sa
-        JOIN survey_responses sr ON sa.survey_response_id = sr.id
-        JOIN events e ON sr.event_id = e.event_id
+    JOIN survey_responses sr ON sa.survey_response_id = sr.id
+    JOIN events e ON sr.event_id = e.event_id
     WHERE
         e.event_type = 'PESQUISA_LEAD'
         AND sr.survey_id = %d
         AND e.event_time BETWEEN (SELECT pesquisa_inicio FROM parametros) AND (SELECT pesquisa_fim FROM parametros)
+        AND (
+            sa.question_id = (SELECT filtro_pergunta FROM parametros)
+            OR (SELECT filtro_pergunta FROM parametros) IS NULL
+        )
 ),
 
--- Agrupamento de respostas por pergunta e alternativa
+-- Agregação das respostas por alternativa
 respostas_agrupadas AS (
     SELECT
         question_id,
         question_text,
         resposta,
         score,
-        COUNT(DISTINCT user_id) AS total_respondentes
+        COUNT(DISTINCT user_id) AS total_respondentes,
+        ROUND(AVG(time_to_answer)::numeric, 2) AS tempo_medio_resposta
     FROM
         todas_respostas
     GROUP BY
         question_id, question_text, resposta, score
 ),
 
--- Contagem de vendas por resposta (usando o mapeamento direto)
+-- Quantos compradores por alternativa
 vendas_por_resposta AS (
     SELECT
         question_id,
@@ -546,7 +555,7 @@ vendas_por_resposta AS (
         question_id, question_text, resposta, score
 ),
 
--- Totais por pergunta para cálculo de percentuais
+-- Total de respondentes por pergunta
 totais_pergunta AS (
     SELECT
         question_id,
@@ -557,42 +566,41 @@ totais_pergunta AS (
         question_id
 ),
 
--- Total geral de vendas para referência
+-- Total absoluto de vendas
 total_vendas AS (
     SELECT COUNT(DISTINCT user_id) AS total FROM compradores
 )
 
--- Resultado final
+-- Resultado final com cruzamento completo
 SELECT
     ra.question_id,
     ra.question_text,
     ra.score AS score_peso,
     ra.resposta,
     ra.total_respondentes AS num_respostas,
-    ROUND((ra.total_respondentes * 100.0 / tp.total_respostas_pergunta)::numeric, 2) AS participacao_percentual,
+    ROUND((ra.total_respondentes * 100.0 / tp.total_respostas_pergunta)::numeric, 2) AS percentual_participacao,
     COALESCE(vpr.total_compradores, 0) AS num_vendas,
     CASE 
         WHEN ra.total_respondentes > 0 THEN 
             ROUND((COALESCE(vpr.total_compradores, 0) * 100.0 / ra.total_respondentes)::numeric, 2)
         ELSE 0 
     END AS taxa_conversao_percentual,
-    -- Percentual em relação ao total de vendas
     CASE 
         WHEN (SELECT total FROM total_vendas) > 0 THEN
             ROUND((COALESCE(vpr.total_compradores, 0) * 100.0 / (SELECT total FROM total_vendas))::numeric, 2) 
         ELSE 0
-    END AS percentual_do_total_vendas
+    END AS percentual_vendas,
+    ra.tempo_medio_resposta
 FROM
     respostas_agrupadas ra
-    JOIN totais_pergunta tp ON ra.question_id = tp.question_id
-    LEFT JOIN vendas_por_resposta vpr ON 
-        ra.question_id = vpr.question_id AND 
-        ra.resposta = vpr.resposta
-    CROSS JOIN total_vendas
+JOIN totais_pergunta tp ON ra.question_id = tp.question_id
+LEFT JOIN vendas_por_resposta vpr 
+    ON ra.question_id = vpr.question_id AND ra.resposta = vpr.resposta
+CROSS JOIN total_vendas
 ORDER BY
-    ra.question_id, 
-    num_vendas DESC, 
-    participacao_percentual DESC;
+    ra.question_id,
+    num_vendas DESC,
+    percentual_participacao DESC;
 `,
 		pesquisaInicioStr, pesquisaFimStr,
 		vendaInicioStr, vendaFimStr,
@@ -606,6 +614,13 @@ ORDER BY
 		return nil, fmt.Errorf("erro ao executar consulta de análise por questão/resposta: %w", err)
 	}
 
+	fmt.Printf("Detail query results: %d rows found\n", len(detailResults))
+	if len(detailResults) > 0 {
+		// Log sample data to debug
+		sampleRow := detailResults[0]
+		fmt.Printf("Sample row data: %+v\n", sampleRow)
+	}
+
 	// Processar os resultados para organizar as respostas por questão
 	questionMap := make(map[string]map[string]interface{})
 
@@ -616,9 +631,9 @@ ORDER BY
 		// Criar a entrada para a questão se não existir
 		if _, exists := questionMap[questionID]; !exists {
 			questionMap[questionID] = map[string]interface{}{
-				"question_id":   questionID,
-				"question_text": questionText,
-				"respostas":     []map[string]interface{}{},
+				"pergunta_id":    questionID,
+				"texto_pergunta": questionText,
+				"respostas":      []map[string]interface{}{},
 			}
 		}
 
@@ -626,13 +641,14 @@ ORDER BY
 		respostas := questionMap[questionID]["respostas"].([]map[string]interface{})
 
 		resposta := map[string]interface{}{
-			"resposta":                   row["resposta"],
-			"score_peso":                 row["score_peso"],
-			"num_respostas":              row["num_respostas"],
-			"participacao_percentual":    row["participacao_percentual"],
-			"num_vendas":                 row["num_vendas"],
-			"taxa_conversao_percentual":  row["taxa_conversao_percentual"],
-			"percentual_do_total_vendas": row["percentual_do_total_vendas"],
+			"texto_opcao":               row["resposta"],
+			"score_peso":                row["score_peso"],
+			"num_respostas":             row["num_respostas"],
+			"percentual_participacao":   row["percentual_participacao"],
+			"num_vendas":                row["num_vendas"],
+			"taxa_conversao_percentual": row["taxa_conversao_percentual"],
+			"percentual_vendas":         row["percentual_vendas"],
+			"tempo_medio_resposta":      row["tempo_medio_resposta"],
 		}
 
 		questionMap[questionID]["respostas"] = append(respostas, resposta)
