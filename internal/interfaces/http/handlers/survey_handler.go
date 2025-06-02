@@ -28,10 +28,17 @@ func (h *SurveyHandler) calculateDateParams(vendasInicioStr string) (map[string]
 	// Parse vendas_inicio
 	vendasInicio, err := h.surveyUseCase.ParseDateParam(vendasInicioStr)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("formato de data inválido para vendas: %v", err)
 	}
 
-	// Normalizar para garantir que estamos usando o horário 20:30:00
+	// Verificar se o horário é 20:30 para compatibilidade
+	if vendasInicio.Hour() != 20 || vendasInicio.Minute() != 30 {
+		// Talvez seja a URL codificada - verificar se a data existe mas o horário está errado
+		fmt.Printf("Horário inválido recebido: %s (%d:%d). Normalizando para 20:30.\n",
+			vendasInicioStr, vendasInicio.Hour(), vendasInicio.Minute())
+	}
+
+	// Normalizar para garantir que estamos usando o horário 20:30:00, INDEPENDENTE do que foi enviado
 	dataBase := time.Date(vendasInicio.Year(), vendasInicio.Month(), vendasInicio.Day(), 0, 0, 0, 0, vendasInicio.Location())
 
 	// 1. vendas_inicio = dataBase às 20:30
@@ -126,7 +133,7 @@ func (h *SurveyHandler) GetSurveyMetrics(c *fiber.Ctx) error {
 	if vendaInicioStr != "" {
 		dateParams, err := h.calculateDateParams(vendaInicioStr)
 		if err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "Formato de data inválido para 'venda_inicio'. Use ISO8601."})
+			return c.Status(400).JSON(fiber.Map{"error": "Horário de início de vendas inválido. As vendas sempre iniciam às 20:30."})
 		}
 
 		// Adicionar todos os parâmetros de data ao mapa de parâmetros
@@ -215,7 +222,7 @@ func (h *SurveyHandler) GetSurveyDetails(c *fiber.Ctx) error {
 	if vendaInicioStr != "" {
 		dateParams, err := h.calculateDateParams(vendaInicioStr)
 		if err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "Formato de data inválido para 'venda_inicio'. Use ISO8601."})
+			return c.Status(400).JSON(fiber.Map{"error": "Horário de início de vendas inválido. As vendas sempre iniciam às 20:30."})
 		}
 
 		// Adicionar todos os parâmetros de data ao mapa de parâmetros

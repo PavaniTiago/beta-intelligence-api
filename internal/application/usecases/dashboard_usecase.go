@@ -79,6 +79,9 @@ type DashboardResult struct {
 	// Dados por hora (opcional)
 	HourlyData *HourlyMetrics `json:"hourly_data,omitempty"`
 
+	// NOVO: Dados granulares do período anterior
+	PreviousPeriodData *PreviousPeriodDetails `json:"previous_period_data,omitempty"`
+
 	// Mantendo campos originais para compatibilidade
 	Sessions            MetricResult       `json:"sessions"`
 	Leads               MetricResult       `json:"leads"`
@@ -86,6 +89,14 @@ type DashboardResult struct {
 	PeriodCounts        map[string]int64   `json:"period_counts,omitempty"`
 	Filters             map[string]string  `json:"filters"`
 	ConversionRateByDay map[string]float64 `json:"conversion_rate_by_day,omitempty"`
+}
+
+// Nova estrutura para dados granulares do período anterior
+type PreviousPeriodDetails struct {
+	SessionsByDay       map[string]int64   `json:"sessions_by_day"`
+	LeadsByDay          map[string]int64   `json:"leads_by_day"`
+	ConversionRateByDay map[string]float64 `json:"conversion_rate_by_day"`
+	HourlyData          *HourlyMetrics     `json:"hourly_data,omitempty"`
 }
 
 // DashboardUseCase define a interface para operações do dashboard unificado
@@ -197,7 +208,8 @@ func (uc *dashboardUseCase) GetUnifiedDashboard(
 	result.SessionsByDay = dashboardData.SessionsByDay
 	result.LeadsByDay = dashboardData.LeadsByDay
 	result.ConversionRateByDay = dashboardData.ConversionRateByDay
-	result.HourlyData = dashboardData.HourlyData // Transferir dados por hora, se existirem
+	result.HourlyData = dashboardData.HourlyData                 // Transferir dados por hora, se existirem
+	result.PreviousPeriodData = dashboardData.PreviousPeriodData // Transferir dados do período anterior
 
 	// Preencher o objeto Metrics com os dados da resposta
 	result.Metrics.Sessions = dashboardData.Sessions.Current
@@ -212,110 +224,35 @@ func (uc *dashboardUseCase) GetUnifiedDashboard(
 	result.Metrics.PrevConversionRate = math.Round(float64(dashboardData.ConversionRate.Previous)*100) / 100
 	result.Metrics.ConversionRateChange = math.Round(dashboardData.ConversionRate.Percentage*100) / 100
 
-	// Se for um único dia, verificar se os totais batem com a soma das horas
-	if isSingleDayQuery && result.HourlyData != nil {
-		// Calcular totais dos dados horários
-		var totalSessions, totalLeads int64
-		for _, sessions := range result.HourlyData.SessionsByHour {
-			totalSessions += sessions
-		}
-		for _, leads := range result.HourlyData.LeadsByHour {
-			totalLeads += leads
-		}
-
-		// Buscar dados do dia anterior para comparação PRECISA
-		ontem := currentPeriod.From.AddDate(0, 0, -1)
-		log.Printf("Dia único detectado. Buscando dados do dia anterior: %s", ontem.Format("2006-01-02"))
-
-		dadosOntem, err := uc.obterDadosComparacao(ontem, ontem, professionID, funnelID, landingPage, productID)
-
-		var prevSessions, prevLeads int64
-		var prevConvRate float64
-
-		if err == nil && dadosOntem.Sessions > 0 {
-			// Usar dados de ontem como valores de comparação
-			prevSessions = dadosOntem.Sessions
-			prevLeads = dadosOntem.Leads
-
-			// Calcular taxa de conversão do dia anterior
-			if prevSessions > 0 {
-				prevConvRate = math.Round(float64(prevLeads)/float64(prevSessions)*10000) / 100
-			}
-
-			log.Printf("Dados do dia anterior encontrados: %d sessões, %d leads, taxa %.2f%%",
-				prevSessions, prevLeads, prevConvRate)
+	// Buscar dados por hora se for um único dia
+	if isSingleDayQuery {
+		hourlyData, err := uc.GetHourlyData(
+			currentPeriod.From,
+			currentPeriod.To,
+			professionID,
+			productID,
+			funnelID,
+			landingPage,
+		)
+		if err == nil {
+			result.HourlyData = hourlyData
 		} else {
-			// Tentar dados da semana anterior se não encontrou dados de ontem
-			log.Printf("Não encontrou dados do dia anterior. Tentando semana anterior.")
-
-			semanaAnterior := currentPeriod.From.AddDate(0, 0, -7)
-			dadosSemanaAnterior, err := uc.obterDadosComparacao(semanaAnterior, semanaAnterior, professionID, funnelID, landingPage, productID)
-
-			if err == nil && dadosSemanaAnterior.Sessions > 0 {
-				log.Printf("Usando dados da semana anterior como comparação.")
-
-				prevSessions = dadosSemanaAnterior.Sessions
-				prevLeads = dadosSemanaAnterior.Leads
-
-				if prevSessions > 0 {
-					prevConvRate = math.Round(float64(prevLeads)/float64(prevSessions)*10000) / 100
-				}
-
-				log.Printf("Dados da semana anterior: %d sessões, %d leads, taxa %.2f%%",
-					prevSessions, prevLeads, prevConvRate)
-			} else {
-				// Se não encontrou nenhum dado, usar zeros mesmo
-				log.Printf("Não encontrou dados para comparação. Usando zeros.")
-			}
+			log.Printf("Erro ao buscar dados por hora: %v", err)
 		}
 
-		// Se os totais forem maiores que os dados de métricas atuais, usar os totais
-		if totalSessions > 0 && (result.Metrics.Sessions == 0 || totalSessions > result.Metrics.Sessions) {
-			result.Metrics.Sessions = totalSessions
-			result.Sessions.Current = totalSessions
-		}
-		if totalLeads > 0 && (result.Metrics.Leads == 0 || totalLeads > result.Metrics.Leads) {
-			result.Metrics.Leads = totalLeads
-			result.Leads.Current = totalLeads
-		}
-
-		// Recalcular taxa de conversão atual
-		if result.Metrics.Sessions > 0 {
-			convRate := float64(result.Metrics.Leads) / float64(result.Metrics.Sessions) * 100
-			result.Metrics.ConversionRate = math.Round(convRate*100) / 100
-			result.ConversionRate.Current = int64(math.Round(convRate))
-		}
-
-		// Definir dados de comparação
-		result.Metrics.PrevSessions = prevSessions
-		result.Metrics.PrevLeads = prevLeads
-		result.Metrics.PrevConversionRate = prevConvRate
-
-		// Atualizar campos de comparação em todos os lugares
-		result.Sessions.Previous = prevSessions
-		result.Leads.Previous = prevLeads
-		result.ConversionRate.Previous = int64(math.Round(prevConvRate))
-
-		// Recalcular percentagens de alteração apenas se tiver dados anteriores
-		if prevSessions > 0 {
-			sessionChange := float64(result.Metrics.Sessions-prevSessions) / float64(prevSessions) * 100
-			result.Metrics.SessionChange = math.Round(sessionChange*100) / 100
-			result.Sessions.Percentage = math.Round(sessionChange*100) / 100
-			result.Sessions.IsIncreasing = result.Metrics.Sessions > prevSessions
-		}
-
-		if prevLeads > 0 {
-			leadChange := float64(result.Metrics.Leads-prevLeads) / float64(prevLeads) * 100
-			result.Metrics.LeadChange = math.Round(leadChange*100) / 100
-			result.Leads.Percentage = math.Round(leadChange*100) / 100
-			result.Leads.IsIncreasing = result.Metrics.Leads > prevLeads
-		}
-
-		if prevConvRate > 0 {
-			convChange := (result.Metrics.ConversionRate - prevConvRate) / prevConvRate * 100
-			result.Metrics.ConversionRateChange = math.Round(convChange*100) / 100
-			result.ConversionRate.Percentage = math.Round(convChange*100) / 100
-			result.ConversionRate.IsIncreasing = result.Metrics.ConversionRate > prevConvRate
+		// Buscar dados por hora do período anterior
+		previousHourlyData, err := uc.GetHourlyData(
+			previousPeriod.From,
+			previousPeriod.To,
+			professionID,
+			productID,
+			funnelID,
+			landingPage,
+		)
+		if err == nil {
+			result.PreviousPeriodData.HourlyData = previousHourlyData
+		} else {
+			log.Printf("Erro ao buscar dados por hora do período anterior: %v", err)
 		}
 	}
 
@@ -356,6 +293,34 @@ func (uc *dashboardUseCase) GetUnifiedDashboard(
 		}
 	}
 
+	// Garantir que todos os dias do período anterior também tenham valores
+	previousDays := generateDateRange(previousPeriod.From, previousPeriod.To)
+	for _, day := range previousDays {
+		if _, exists := result.PreviousPeriodData.SessionsByDay[day]; !exists {
+			result.PreviousPeriodData.SessionsByDay[day] = 0
+		}
+		if _, exists := result.PreviousPeriodData.LeadsByDay[day]; !exists {
+			result.PreviousPeriodData.LeadsByDay[day] = 0
+		}
+
+		// Calcular taxa de conversão para o dia do período anterior
+		sessions := result.PreviousPeriodData.SessionsByDay[day]
+		leads := result.PreviousPeriodData.LeadsByDay[day]
+		if sessions > 0 {
+			convRate := float64(leads) / float64(sessions) * 100
+			result.PreviousPeriodData.ConversionRateByDay[day] = math.Round(convRate*100) / 100
+		} else {
+			result.PreviousPeriodData.ConversionRateByDay[day] = 0
+		}
+	}
+
+	// Log para debug dos períodos
+	fmt.Printf("DEBUG: Dias do período atual: %v\n", days)
+	fmt.Printf("DEBUG: Dias do período anterior: %v\n", previousDays)
+	fmt.Printf("DEBUG: Dados do período anterior: sessões=%v, leads=%v\n",
+		result.PreviousPeriodData.SessionsByDay,
+		result.PreviousPeriodData.LeadsByDay)
+
 	// Adicionar tempo de processamento
 	processingTime := time.Since(startTime).Milliseconds()
 	result.Filters["processing_time_ms"] = fmt.Sprintf("%d", processingTime)
@@ -373,6 +338,9 @@ type OptimizedDashboardData struct {
 	LeadsByDay          map[string]int64   // Alterado de []DayCount para map
 	ConversionRateByDay map[string]float64 // Alterado para usar map
 	HourlyData          *HourlyMetrics     // Alterado para usar HourlyMetrics
+
+	// NOVO: Dados granulares do período anterior
+	PreviousPeriodData *PreviousPeriodDetails // Dados detalhados do período anterior
 }
 
 // getOptimizedDashboardData obtém todos os dados do dashboard em uma operação otimizada
@@ -392,6 +360,11 @@ func (uc *dashboardUseCase) getOptimizedDashboardData(
 		SessionsByDay:       make(map[string]int64),
 		LeadsByDay:          make(map[string]int64),
 		ConversionRateByDay: make(map[string]float64),
+		PreviousPeriodData: &PreviousPeriodDetails{
+			SessionsByDay:       make(map[string]int64),
+			LeadsByDay:          make(map[string]int64),
+			ConversionRateByDay: make(map[string]float64),
+		},
 	}
 
 	// Verificar se estamos consultando um único dia
@@ -420,6 +393,11 @@ func (uc *dashboardUseCase) getOptimizedDashboardData(
 
 	fmt.Printf("Processando dashboard para período: %s (isSingleDay: %v), anterior: %s\n",
 		currentPeriodStr, isSingleDayQuery, previousPeriodStr)
+
+	// Debug: Log dos parâmetros do período anterior
+	fmt.Printf("DEBUG: previousPeriod.From=%s, previousPeriod.To=%s\n",
+		previousPeriod.From.Format("2006-01-02 15:04:05"),
+		previousPeriod.To.Format("2006-01-02 15:04:05"))
 
 	// OTIMIZAÇÃO PRINCIPAL: Consulta unificada para sessões e leads
 	// Isso elimina múltiplas chamadas ao banco de dados
@@ -561,6 +539,68 @@ func (uc *dashboardUseCase) getOptimizedDashboardData(
 
 	unifiedQuery += `
 			GROUP BY dia
+		),
+		-- NOVO: Contagem diária para o período anterior
+		previous_daily_session_data AS (
+			SELECT 
+				to_char(date_trunc('day', "sessionStart" AT TIME ZONE 'America/Sao_Paulo'), 'YYYY-MM-DD') as dia,
+				COUNT(*) as sessoes
+			FROM sessions 
+			WHERE "sessionStart" BETWEEN ? AND ?
+	`
+	queryArgs = append(queryArgs,
+		previousPeriod.From, previousPeriod.To, // para sessões anteriores WHERE
+	)
+
+	// Adicionar filtros para sessões diárias do período anterior
+	if landingPage != "" {
+		unifiedQuery += ` AND "landingPage" = ?`
+		queryArgs = append(queryArgs, landingPage)
+	}
+	if professionID != "" {
+		unifiedQuery += ` AND profession_id = ?`
+		queryArgs = append(queryArgs, professionID)
+	}
+	if productID != "" {
+		unifiedQuery += ` AND product_id = ?`
+		queryArgs = append(queryArgs, productID)
+	}
+	if funnelID != "" {
+		unifiedQuery += ` AND funnel_id = ?`
+		queryArgs = append(queryArgs, funnelID)
+	}
+
+	unifiedQuery += `
+			GROUP BY dia
+		),
+		previous_daily_lead_data AS (
+			SELECT 
+				to_char(date_trunc('day', event_time AT TIME ZONE 'America/Sao_Paulo'), 'YYYY-MM-DD') as dia,
+				COUNT(*) as leads
+			FROM events 
+			WHERE event_time BETWEEN ? AND ?
+			AND event_type = 'LEAD'
+	`
+	queryArgs = append(queryArgs,
+		previousPeriod.From, previousPeriod.To, // para leads anteriores WHERE
+	)
+
+	// Adicionar filtros para leads diários do período anterior
+	if professionID != "" {
+		unifiedQuery += ` AND profession_id = ?`
+		queryArgs = append(queryArgs, professionID)
+	}
+	if productID != "" {
+		unifiedQuery += ` AND product_id = ?`
+		queryArgs = append(queryArgs, productID)
+	}
+	if funnelID != "" {
+		unifiedQuery += ` AND funnel_id = ?`
+		queryArgs = append(queryArgs, funnelID)
+	}
+
+	unifiedQuery += `
+			GROUP BY dia
 		)
 		SELECT 'counts' as type, periodo, total FROM session_counts
 		UNION ALL
@@ -569,6 +609,10 @@ func (uc *dashboardUseCase) getOptimizedDashboardData(
 		SELECT 'daily' as type, dia, sessoes FROM daily_session_data
 		UNION ALL
 		SELECT 'daily_leads' as type, dia, leads FROM daily_lead_data
+		UNION ALL
+		SELECT 'previous_daily' as type, dia, sessoes FROM previous_daily_session_data
+		UNION ALL
+		SELECT 'previous_daily_leads' as type, dia, leads FROM previous_daily_lead_data
 	`
 
 	// Estrutura para receber os resultados unificados
@@ -606,6 +650,10 @@ func (uc *dashboardUseCase) getOptimizedDashboardData(
 			result.PeriodCounts[row.Periodo] = row.Total
 		case "daily_leads":
 			result.LeadsByDay[row.Periodo] = row.Total
+		case "previous_daily":
+			result.PreviousPeriodData.SessionsByDay[row.Periodo] = row.Total
+		case "previous_daily_leads":
+			result.PreviousPeriodData.LeadsByDay[row.Periodo] = row.Total
 		}
 	}
 
@@ -619,6 +667,18 @@ func (uc *dashboardUseCase) getOptimizedDashboardData(
 			conversionRate = math.Round(conversionRate*100) / 100
 		}
 		result.ConversionRateByDay[day] = conversionRate
+	}
+
+	// Calcular taxas de conversão por dia para o período anterior
+	for day, sessions := range result.PreviousPeriodData.SessionsByDay {
+		leads := result.PreviousPeriodData.LeadsByDay[day]
+		var conversionRate float64
+		if sessions > 0 {
+			conversionRate = float64(leads) / float64(sessions) * 100
+			// Arredondar para duas casas decimais
+			conversionRate = math.Round(conversionRate*100) / 100
+		}
+		result.PreviousPeriodData.ConversionRateByDay[day] = conversionRate
 	}
 
 	// Métricas de sessões
@@ -690,6 +750,21 @@ func (uc *dashboardUseCase) getOptimizedDashboardData(
 			result.HourlyData = hourlyData
 		} else {
 			log.Printf("Erro ao buscar dados por hora: %v", err)
+		}
+
+		// Buscar dados por hora do período anterior
+		previousHourlyData, err := uc.GetHourlyData(
+			previousPeriod.From,
+			previousPeriod.To,
+			professionID,
+			productID,
+			funnelID,
+			landingPage,
+		)
+		if err == nil {
+			result.PreviousPeriodData.HourlyData = previousHourlyData
+		} else {
+			log.Printf("Erro ao buscar dados por hora do período anterior: %v", err)
 		}
 	}
 

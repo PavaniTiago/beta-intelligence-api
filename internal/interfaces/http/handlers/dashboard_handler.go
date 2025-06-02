@@ -96,6 +96,9 @@ func (h *DashboardHandler) GetUnifiedDashboard(c *fiber.Ctx) error {
 		})
 	}
 
+	// Ajustar currentToDate para incluir o dia completo (23:59:59)
+	currentToDate = currentToDate.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
+
 	// Configurar período atual
 	currentPeriod := usecases.DatePeriod{
 		From:     currentFromDate,
@@ -105,9 +108,23 @@ func (h *DashboardHandler) GetUnifiedDashboard(c *fiber.Ctx) error {
 	}
 
 	// Calcular período anterior (mesmo número de dias, imediatamente anterior)
-	daysDiff := currentToDate.Sub(currentFromDate).Hours() / 24
+	daysDiff := int(currentToDate.Sub(currentFromDate).Hours() / 24)
+
+	// Calcular período anterior: mesmo número de dias, terminando 1 dia antes do período atual
 	previousToDate := currentFromDate.AddDate(0, 0, -1)
-	previousFromDate := previousToDate.AddDate(0, 0, -int(daysDiff))
+	previousFromDate := previousToDate.AddDate(0, 0, -daysDiff)
+
+	// Ajustar previousToDate para incluir o dia completo (23:59:59)
+	previousToDate = previousToDate.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
+
+	// Log para debug das datas calculadas
+	fmt.Printf("DEBUG: Período atual: %s até %s (duração: %d dias)\n",
+		currentFromDate.Format("2006-01-02 15:04:05"),
+		currentToDate.Format("2006-01-02 15:04:05"),
+		daysDiff)
+	fmt.Printf("DEBUG: Período anterior: %s até %s\n",
+		previousFromDate.Format("2006-01-02 15:04:05"),
+		previousToDate.Format("2006-01-02 15:04:05"))
 
 	// Configurar período anterior
 	previousPeriod := usecases.DatePeriod{
