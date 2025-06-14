@@ -42,6 +42,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 	sessionRepo := repositories.NewSessionRepository(db)
 	productRepo := repositories.NewProductRepository(db)
 	surveyRepo := repositories.NewSurveyRepository(db)
+	revenueRepo := repositories.NewRevenueRepository(db)
 
 	// Use Cases
 	userUseCase := usecases.NewUserUseCase(userRepo)
@@ -52,6 +53,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 	productUseCase := usecases.NewProductUseCase(productRepo)
 	dashboardUseCase := usecases.NewDashboardUseCase(sessionRepo, eventRepo, db)
 	surveyUseCase := usecases.NewSurveyUseCase(surveyRepo)
+	revenueUseCase := usecases.NewRevenueUseCase(revenueRepo)
 
 	// Handlers
 	userHandler := handlers.NewUserHandler(userUseCase, userRepo)
@@ -62,6 +64,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 	productHandler := handlers.NewProductHandler(productUseCase)
 	dashboardHandler := handlers.NewDashboardHandler(dashboardUseCase)
 	surveyHandler := handlers.NewSurveyHandler(surveyUseCase)
+	revenueHandler := handlers.NewRevenueHandler(revenueUseCase)
 
 	// Create handlers struct
 	handlersStruct := handlers.NewHandlers(nil, db)
@@ -102,6 +105,10 @@ func SetupRoutes(app *fiber.App, db *gorm.DB) {
 	// Dashboard routes
 	groups.Public.Get("/dashboard/unified", dashboardHandler.GetUnifiedDashboard)
 	groups.Public.Get("/dashboard/profession-conversion", dashboardHandler.GetProfessionConversionRates)
+
+	// Unified data routes (leads + revenue)
+	groups.Public.Get("/dashboard/revenue", revenueHandler.GetUnifiedDataGeneral)
+	groups.Public.Get("/dashboard/revenue-by-profession", revenueHandler.GetUnifiedDataByProfession)
 
 	// Rotas de Performance
 	setupPerformanceRoutes(groups.Public, handlersStruct.Performance)
